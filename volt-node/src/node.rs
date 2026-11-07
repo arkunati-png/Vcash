@@ -19,7 +19,7 @@ use volt_crypto::{meets_target, PowHasher};
 use volt_network::{
     start, ChainBackend, P2pConfig, P2pHandle, SubmitError, MAX_BLOCKS_PER_MESSAGE,
 };
-use volt_state::ApplyRules;
+use volt_state::{ApplyRules, ShieldedError};
 use volt_storage::{PersistentConsensus, StorageError, SyncPolicy};
 use zebra_chain::{block::Height, transparent::Address};
 
@@ -94,6 +94,14 @@ pub struct NodeStatus {
     pub epochs_locked: usize,
     /// VOLT permanently locked in the POL reserve, in zatoshis.
     pub pol_locked: i64,
+    /// The Sapling note commitment tree root.
+    pub sapling_root: [u8; 32],
+    /// The Orchard note commitment tree root.
+    pub orchard_root: [u8; 32],
+    /// Value in the Sapling pool, in zatoshis.
+    pub sapling_pool: i128,
+    /// Value in the Orchard pool, in zatoshis.
+    pub orchard_pool: i128,
     /// Transactions waiting in the mempool.
     pub mempool: usize,
     /// Connected peers.
@@ -230,6 +238,15 @@ impl ChainBackend for Inner {
         let txid = tx.txid();
 
         let chain = self.chain.lock();
+        // A block containing a transaction with an unknown anchor, an unsupported pool, would be
+        // rejected whole, so refuse it up front. A missing anchor may just not have arrived yet.
+        chain
+            .consensus()
+            .check_tx_anchors(tx.as_ref())
+            .map_err(|e| match e {
+                ShieldedError::UnsupportedPool(_) => SubmitError::Invalid(e.to_string()),
+                other => SubmitError::Temporary(other.to_string()),
+            })?;
         let rules = ApplyRules {
             verifier: self.config.verifier.as_ref(),
             coinbase_maturity: self.config.coinbase_maturity,
@@ -320,6 +337,10 @@ impl Node {
             nullifiers: consensus.utxos().nullifier_count(),
             epochs_locked: consensus.reserve().settlements().len(),
             pol_locked: consensus.reserve().locked().zatoshis(),
+            sapling_root: consensus.shielded().sapling_root(),
+            orchard_root: consensus.shielded().orchard_root(),
+            sapling_pool: consensus.shielded().sapling_pool(),
+            orchard_pool: consensus.shielded().orchard_pool(),
             mempool: self.inner.mempool.lock().len(),
             peers: self.p2p.peer_count(),
         }

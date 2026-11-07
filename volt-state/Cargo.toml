@@ -13,7 +13,12 @@ volt-core = { path = "../volt-core" }
 zebra-chain = { path = "../zebra-chain" }
 
 dashmap = { workspace = true }
+halo2 = { workspace = true }
+sapling-crypto = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+zebra-test = { path = "../zebra-test" }
 
 [lints]
 workspace = true

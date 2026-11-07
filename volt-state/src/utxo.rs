@@ -5,11 +5,13 @@ use std::{
     sync::Arc,
 };
 
+use crate::shielded::ShieldedError;
 use dashmap::DashMap;
 use thiserror::Error;
 use volt_core::{
     calculate_tx_fee, BatchableTx, NoVerification, Nullifier, TxVerifier, TxVerifyItem, VerifyError,
 };
+
 use zebra_chain::{
     block::Height,
     transaction,
@@ -62,6 +64,10 @@ pub enum StateError {
     /// A transaction's proofs or signatures are invalid.
     #[error(transparent)]
     Verification(#[from] VerifyError),
+
+    /// A block's shielded content breaks the anchor, commitment or turnstile rules.
+    #[error(transparent)]
+    Shielded(#[from] ShieldedError),
 }
 
 /// The consensus rules a batch is applied under, beyond value balance.
@@ -333,7 +339,7 @@ impl RamUtxoStore {
                 tx_spent.push(utxo.output);
             }
             spent_outputs.push(tx_spent);
-            inputs += i128::from(tx.shielded_value_out().zatoshis());
+            inputs += tx.shielded_value_out();
 
             let mut outputs: i128 = 0;
             for (index, output) in tx.outputs().into_iter().enumerate() {
@@ -403,6 +409,7 @@ impl RamUtxoStore {
 mod tests {
     use super::*;
     use volt_core::{DevTx, TxKind};
+
     use zebra_chain::{amount::Amount, transparent::Script};
 
     const H: Height = Height(1);

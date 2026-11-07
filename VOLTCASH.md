@@ -32,6 +32,8 @@ Eight crates added to this Zebra workspace. They reuse `zebra-chain` types (`Tra
 | POL permanently locked | `PolReserve` has no withdraw API |
 | Coinbase maturity | `RamUtxoStore::plan` |
 | Sapling / Orchard proofs, signatures, transparent scripts | `volt-verify`, invoked by `RamUtxoStore` at acceptance |
+| Shielded anchors, note commitment trees, pool balances (turnstile) | `volt-state/src/shielded.rs`, applied by `ChainState` |
+| Sprout and Ironwood refused | `ShieldedState::check_anchors`, and `volt-verify` |
 | Sharded RAM UTXO store | `volt-state/src/utxo.rs` |
 
 ## Build and run
@@ -86,6 +88,30 @@ validated, because a transparent signature hash commits to the spent outputs, wh
 consensus order determines. They are checked after the cheap state rules, and results are cached
 by witnessed transaction id.
 
+## Shielded transactions
+
+Verifying a shielded proof is not enough. A proof is checked against whatever *anchor* (note
+commitment tree root) the transaction names, so without more it could be made against a tree the
+spender invented and **mint shielded coins**. `ShieldedState` closes that with three rules taken
+from Zcash:
+
+1. **Anchors.** A spend must name the root of the real tree at the end of an *earlier* chain step.
+   Roots become valid anchors only when their step is sealed, so a transaction can never anchor
+   to its own step. The empty-tree roots are valid from genesis. A reorg unseals and restores
+   exactly, and wallets should anchor a few steps back, because an anchor from a step that is later
+   reverted makes the transaction invalid.
+2. **Commitments.** Every note commitment is appended to its pool's tree in consensus order, so all
+   nodes build identical trees. It uses Zebra's own `NoteCommitmentTree` types.
+3. **The turnstile.** Each pool's value may never go negative, checked per block. Even a flaw in a
+   proof system could not let someone take out more than was put in.
+
+A block that breaks these is rejected whole at acceptance, atomically (its UTXO changes are undone
+too), exactly like any other state conflict. The mempool refuses such transactions up front.
+Sprout and Ironwood are refused outright, because nothing tracks their pools.
+
+Shielded values are carried as wide integers end to end, so adding the Sapling and Orchard
+balances can never overflow or be silently clamped.
+
 ## Economics
 
 `Economics::mainnet()`: 0.05 VOLT per block, halving yearly, 0.001 VOLT tail; miners keep 70% of
@@ -110,10 +136,16 @@ Read this before trusting any of it with value.
   self-reviewed, but not audited. A fuzzing campaign with `cargo-fuzz` has not been run; the
   decoders are covered by `proptest` only.
 - **The real-transaction path is not exercised in a live node.** `volt-verify` is tested against
-  genuine mainnet Sapling and Orchard transactions and a signed transparent spend, and the state
-  layer is tested against its hook. But no wallet exists that builds Voltcash-fee shielded
-  transactions, so `--real-txs` has never run end to end. The devnet uses proof-less `DevTx` and
-  says so loudly.
+  genuine mainnet Sapling and Orchard transactions and a signed transparent spend, and the shielded
+  rules against both `DevTx` and real transactions. But no wallet exists that builds Voltcash-fee
+  shielded transactions, so `--real-txs` has never run end to end, and no real shielded spend has
+  ever been accepted by a Voltcash node. The devnet uses proof-less `DevTx` and says so loudly.
+- **The commitment trees are not checked against a real chain's roots.** The vectors are sparse, so
+  a full replay is impossible. What *is* checked against real data: real Orchard anchors equal the
+  empty-tree root byte for byte, real commitments are accepted as tree leaves, and real Sapling
+  spends are refused as unknown anchors.
+- **One nullifier set is shared by both pools.** A Sapling and an Orchard nullifier with identical
+  bytes would collide. That is cryptographically negligible, but separate sets would be cleaner.
 - **The 100-address cap does not limit mining concentration.** Anyone can make addresses. The
   minimum payout makes splitting cost something; RandomX is the actual anti-concentration measure.
 - **Networking is minimal.** Peers come from a configured seed list: no discovery, no address

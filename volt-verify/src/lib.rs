@@ -187,6 +187,10 @@ impl TxVerifier for ZebraTxVerifier {
             if tx.has_sprout_joinsplit_data() {
                 return Err(fail(item.tx, "Sprout JoinSplits are not supported".into()));
             }
+            // The node tracks no Ironwood pool, so value could be created there without limit.
+            if tx.has_ironwood_shielded_data() {
+                return Err(fail(item.tx, "Ironwood is not supported".into()));
+            }
 
             let nu = self.upgrade_for(tx).map_err(|e| fail(item.tx, e))?;
             let spent = Arc::new(item.spent_outputs.clone());
@@ -203,12 +207,9 @@ impl TxVerifier for ZebraTxVerifier {
                 sapling_used = true;
             }
 
-            // Orchard and Ironwood share the Action circuit, so they share the era's key.
+            // Orchard bundles verify against the Action circuit of the era.
             let era = orchard_era(nu);
-            for bundle in [hasher.orchard_bundle(), hasher.ironwood_bundle()]
-                .into_iter()
-                .flatten()
-            {
+            if let Some(bundle) = hasher.orchard_bundle() {
                 let batch = match orchard.iter().position(|(e, _)| *e == era) {
                     Some(i) => &mut orchard[i].1,
                     None => {

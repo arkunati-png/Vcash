@@ -9,7 +9,7 @@ use volt_core::{
     VoltBlock, VoltHash, VoltHeader,
 };
 use volt_crypto::{meets_target, PowHasher};
-use volt_state::{PolReserve, RamUtxoStore};
+use volt_state::{PolReserve, RamUtxoStore, ShieldedError, ShieldedState};
 use zebra_chain::{
     amount::{Amount, NonNegative},
     transparent::Address,
@@ -184,6 +184,19 @@ impl Consensus {
     /// The POL reserve.
     pub fn reserve(&self) -> &PolReserve {
         self.chain.reserve()
+    }
+
+    /// The shielded state: note commitment trees, valid anchors and pool balances.
+    pub fn shielded(&self) -> &ShieldedState {
+        self.chain.shielded()
+    }
+
+    /// Checks that `tx` uses no unsupported pool and spends against valid shielded anchors.
+    ///
+    /// A block containing a transaction that fails this is rejected, so a miner or a mempool
+    /// should refuse such transactions up front.
+    pub fn check_tx_anchors(&self, tx: &dyn BatchableTx) -> Result<(), ShieldedError> {
+        self.chain.shielded().check_anchors(tx)
     }
 
     /// The epoch in progress.

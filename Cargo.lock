@@ -6536,9 +6536,12 @@ name = "volt-state"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "halo2_proofs",
+ "sapling-crypto",
  "thiserror 2.0.18",
  "volt-core",
  "zebra-chain",
+ "zebra-test",
 ]
 
 [[package]]

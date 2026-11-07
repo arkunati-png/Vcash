@@ -23,7 +23,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use volt_core::{constants::FINALITY_DEPTH, Economics, TxVerifier, VoltHash};
-use volt_state::{ApplyRules, BlockUndo, EpochSettlement, PolReserve, RamUtxoStore, StateError};
+use volt_state::{
+    ApplyRules, BlockUndo, EpochSettlement, PolReserve, RamUtxoStore, ShieldedSnapshot,
+    ShieldedState, StateError, StepSeal,
+};
 use zebra_chain::block::Height;
 
 use crate::{
@@ -39,6 +42,11 @@ struct ChainStep {
     accepted: Vec<VoltHash>,
     /// Epochs completed in this step. They are locked into the reserve once the step is final.
     completed_epochs: Vec<EpochSettlement>,
+    /// The note commitment trees and pool balances before this step. Dropped once the step is
+    /// final, because a final step is never reverted.
+    shielded_before: Option<ShieldedSnapshot>,
+    /// The anchors this step added when it was sealed.
+    seal: StepSeal,
 }
 
 /// A summary of a [`ChainState::advance`] call.
@@ -67,6 +75,7 @@ pub struct ChainState {
     verifier: Arc<dyn TxVerifier>,
     coinbase_maturity: u32,
     store: RamUtxoStore,
+    shielded: ShieldedState,
     reserve: PolReserve,
     epoch: EpochAccumulator,
     steps: Vec<ChainStep>,
@@ -88,6 +97,7 @@ impl ChainState {
             verifier,
             coinbase_maturity,
             store: RamUtxoStore::new(),
+            shielded: ShieldedState::new(),
             reserve: PolReserve::new(),
             epoch: EpochAccumulator::new(),
             steps: vec![ChainStep {
@@ -96,6 +106,8 @@ impl ChainState {
                 epoch_before: EpochAccumulator::new(),
                 accepted: Vec::new(),
                 completed_epochs: Vec::new(),
+                shielded_before: None,
+                seal: StepSeal::default(),
             }],
             finalized_steps: 1, // the genesis step
             accepted_blocks: 0,
@@ -105,6 +117,11 @@ impl ChainState {
     /// The RAM UTXO store.
     pub fn utxos(&self) -> &RamUtxoStore {
         &self.store
+    }
+
+    /// The shielded state: note commitment trees, valid anchors and pool balances.
+    pub fn shielded(&self) -> &ShieldedState {
+        &self.shielded
     }
 
     /// The POL reserve. It holds only epochs that are final.
@@ -165,6 +182,12 @@ impl ChainState {
         while self.steps.len() > common {
             let step = self.steps.pop().expect("length was just checked");
             self.store.revert_block(step.undo);
+            // Unseal first, so the roots this step made valid stop being anchors, then put the
+            // trees and pools back exactly as they were.
+            self.shielded.unseal_step(step.seal);
+            if let Some(before) = step.shielded_before {
+                self.shielded.restore(before);
+            }
             self.epoch = step.epoch_before;
             self.accepted_blocks -= step.accepted.len() as u64; // lossless: a Vec length fits in u64
             report.reverted_steps += 1;
@@ -187,6 +210,11 @@ impl ChainState {
                 self.reserve.lock(*settlement)?;
                 report.epochs_locked.push(*settlement);
             }
+            // A final step is never reverted, so its undo data can never be used: free it, or
+            // memory would grow with the length of the chain.
+            let step = &mut self.steps[self.finalized_steps];
+            step.undo = BlockUndo::default();
+            step.shielded_before = None;
             self.finalized_steps += 1;
         }
         Ok(())
@@ -212,6 +240,8 @@ impl ChainState {
             epoch_before: self.epoch.clone(),
             accepted: Vec::new(),
             completed_epochs: Vec::new(),
+            shielded_before: Some(self.shielded.snapshot()),
+            seal: StepSeal::default(),
         };
 
         for member in dag.ordered_mergeset(&chain_block) {
@@ -231,7 +261,18 @@ impl ChainState {
                 self.store
                     .apply_block(body.block.coinbase.outputs(), &body.txs, height, &rules);
             match applied {
-                Ok(undo) => step.undo.merge(undo),
+                Ok(undo) => {
+                    // The shielded rules: anchors, note commitments and the turnstile. A block
+                    // that breaks them is rejected whole, so its UTXO changes are undone too.
+                    let before_member = self.shielded.snapshot();
+                    if let Err(error) = self.shielded.apply_block(&body.txs) {
+                        self.shielded.restore(before_member);
+                        self.store.revert_block(undo);
+                        report.rejected.push((member, StateError::from(error)));
+                        continue;
+                    }
+                    step.undo.merge(undo);
+                }
                 Err(error) => {
                     report.rejected.push((member, error));
                     continue;
@@ -266,6 +307,9 @@ impl ChainState {
                 Err(error) => {
                     // The block was validated, so this means corrupted accounting: undo the step.
                     self.store.revert_block(step.undo);
+                    if let Some(before) = step.shielded_before {
+                        self.shielded.restore(before);
+                    }
                     self.epoch = step.epoch_before;
                     return Err(error.into());
                 }
@@ -275,6 +319,8 @@ impl ChainState {
             report.accepted.push(member);
         }
 
+        // The step is done: the trees' roots become valid anchors for later steps.
+        step.seal = self.shielded.seal_step();
         self.steps.push(step);
         Ok(())
     }

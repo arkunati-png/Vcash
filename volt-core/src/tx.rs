@@ -8,7 +8,6 @@ use std::{any::Any, sync::Arc};
 
 use thiserror::Error;
 use zebra_chain::{
-    amount::{Amount, NegativeAllowed},
     serialization::{ZcashDeserializeInto, ZcashSerialize},
     transaction::Transaction,
     transparent::{OutPoint, Output},
@@ -48,9 +47,54 @@ pub trait BatchableTx: Send + Sync + std::fmt::Debug {
     /// The shielded nullifiers revealed by this transaction.
     fn nullifiers(&self) -> Vec<Nullifier>;
 
-    /// The net value this transaction moves from the shielded pools into the
-    /// transparent pool. Negative when it shields value.
-    fn shielded_value_out(&self) -> Amount<NegativeAllowed>;
+    /// The value this transaction moves out of the Sapling pool into the transparent pool.
+    /// Negative when it shields value into the pool.
+    fn sapling_value_out(&self) -> i64 {
+        0
+    }
+
+    /// The value this transaction moves out of the Orchard pool. Negative when it shields value.
+    fn orchard_value_out(&self) -> i64 {
+        0
+    }
+
+    /// The net value this transaction moves from the shielded pools into the transparent pool.
+    /// Negative when it shields value.
+    ///
+    /// A wide integer, so adding the pools can never overflow or be clamped.
+    fn shielded_value_out(&self) -> i128 {
+        i128::from(self.sapling_value_out()) + i128::from(self.orchard_value_out())
+    }
+
+    /// The Sapling anchors this transaction spends against, without duplicates.
+    ///
+    /// Each must be the root of the Sapling note commitment tree at the end of an earlier chain
+    /// step, or a spend could be proven against a tree the spender made up.
+    fn sapling_anchor_roots(&self) -> Vec<[u8; 32]> {
+        Vec::new()
+    }
+
+    /// The Orchard anchor, if the transaction has an Orchard bundle. The same rule applies.
+    fn orchard_anchor_root(&self) -> Option<[u8; 32]> {
+        None
+    }
+
+    /// The Sapling note commitments this transaction creates, in order.
+    fn sapling_commitment_bytes(&self) -> Vec<[u8; 32]> {
+        Vec::new()
+    }
+
+    /// The Orchard note commitments this transaction creates, in order.
+    fn orchard_commitment_bytes(&self) -> Vec<[u8; 32]> {
+        Vec::new()
+    }
+
+    /// Whether the transaction uses a shielded pool the node does not track (Sprout, Ironwood).
+    ///
+    /// Value could be created in an untracked pool without limit, so such transactions are refused.
+    fn has_unsupported_shielded_data(&self) -> bool {
+        false
+    }
 
     /// The canonical serialization.
     fn to_bytes(&self) -> Vec<u8>;
@@ -165,10 +209,44 @@ impl BatchableTx for Transaction {
             .collect()
     }
 
-    fn shielded_value_out(&self) -> Amount<NegativeAllowed> {
-        let sapling = self.sapling_value_balance().sapling_amount();
-        let orchard = self.orchard_value_balance().orchard_amount();
-        (sapling + orchard).unwrap_or_else(|_| Amount::zero())
+    fn sapling_value_out(&self) -> i64 {
+        self.sapling_value_balance().sapling_amount().zatoshis()
+    }
+
+    fn orchard_value_out(&self) -> i64 {
+        self.orchard_value_balance().orchard_amount().zatoshis()
+    }
+
+    fn sapling_anchor_roots(&self) -> Vec<[u8; 32]> {
+        let mut anchors: Vec<[u8; 32]> = Vec::new();
+        for spend in self.sapling_spends() {
+            let anchor = spend.anchor().to_bytes();
+            if !anchors.contains(&anchor) {
+                anchors.push(anchor);
+            }
+        }
+        anchors
+    }
+
+    fn orchard_anchor_root(&self) -> Option<[u8; 32]> {
+        self.orchard_bundle()
+            .map(|bundle| bundle.anchor().to_bytes())
+    }
+
+    fn sapling_commitment_bytes(&self) -> Vec<[u8; 32]> {
+        self.sapling_note_commitments()
+            .map(|commitment| commitment.to_bytes())
+            .collect()
+    }
+
+    fn orchard_commitment_bytes(&self) -> Vec<[u8; 32]> {
+        self.orchard_note_commitments()
+            .map(|commitment| commitment.to_bytes())
+            .collect()
+    }
+
+    fn has_unsupported_shielded_data(&self) -> bool {
+        self.has_sprout_joinsplit_data() || self.has_ironwood_shielded_data()
     }
 
     fn to_bytes(&self) -> Vec<u8> {

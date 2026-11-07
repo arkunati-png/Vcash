@@ -70,6 +70,10 @@ fn converged(a: &Node, b: &Node) -> bool {
         && x.accepted_blocks == y.accepted_blocks
         && x.utxos == y.utxos
         && x.nullifiers == y.nullifiers
+        && x.sapling_root == y.sapling_root
+        && x.orchard_root == y.orchard_root
+        && x.sapling_pool == y.sapling_pool
+        && x.orchard_pool == y.orchard_pool
 }
 
 fn mine(node: &Node, count: usize) -> Vec<VoltHash> {

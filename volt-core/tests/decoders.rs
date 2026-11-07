@@ -44,10 +44,25 @@ fn arb_dev_tx() -> impl Strategy<Value = DevTx> {
         any::<bool>(),
         any::<u64>(),
         -1_000_000i64..1_000_000,
+        (
+            -1_000_000i64..1_000_000,
+            prop::collection::vec(any::<[u8; 32]>(), 0..3),
+            prop::collection::vec(any::<[u8; 32]>(), 0..3),
+        ),
+        (
+            -1_000_000i64..1_000_000,
+            prop::option::of(any::<[u8; 32]>()),
+            prop::collection::vec(any::<[u8; 32]>(), 0..3),
+        ),
     )
-        .prop_map(|(inputs, outputs, nullifiers, shielded, nonce, out)| {
-            DevTx::new(inputs, outputs, nullifiers, shielded, nonce).with_shielded_value_out(out)
-        })
+        .prop_map(
+            |(inputs, outputs, nullifiers, shielded, nonce, out, sapling, orchard)| {
+                DevTx::new(inputs, outputs, nullifiers, shielded, nonce)
+                    .with_shielded_value_out(out)
+                    .with_sapling(sapling.0, sapling.1, sapling.2)
+                    .with_orchard(orchard.0, orchard.1, orchard.2)
+            },
+        )
 }
 
 fn arb_block() -> impl Strategy<Value = VoltBlock> {
