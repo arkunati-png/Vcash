@@ -24,6 +24,7 @@ volt-core = { path = "../volt-core" }
 volt-crypto = { path = "../volt-crypto" }
 volt-network = { path = "../volt-network" }
 volt-state = { path = "../volt-state" }
+volt-params = { path = "../volt-params" }
 volt-storage = { path = "../volt-storage" }
 volt-verify = { path = "../volt-verify", optional = true }
 zebra-chain = { path = "../zebra-chain" }

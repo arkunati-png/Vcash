@@ -191,7 +191,7 @@ pub mod regtest {
     /// The HRP for a Bech32-encoded regtest Sapling payment address.
     ///
     /// It is defined in zcashd, and is not part of the Zcash Protocol Specification.
-    pub const HRP_SAPLING_PAYMENT_ADDRESS: &str = "volts";
+    pub const HRP_SAPLING_PAYMENT_ADDRESS: &str = volt_params::HRP_SAPLING_PAYMENT_ADDRESS;
 
     /// The prefix for a Base58Check-encoded regtest Sprout address.
     ///
@@ -201,45 +201,45 @@ pub mod regtest {
     /// The prefix for a Base58Check-encoded regtest transparent P2PKH address.
     ///
     /// It is the same as [`super::testnet::B58_PUBKEY_ADDRESS_PREFIX`].
-    pub const B58_PUBKEY_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x37];
+    pub const B58_PUBKEY_ADDRESS_PREFIX: [u8; 2] = volt_params::B58_PUBKEY_ADDRESS_PREFIX;
 
     /// The prefix for a Base58Check-encoded regtest transparent P2SH address.
     ///
     /// It is the same as [`super::testnet::B58_SCRIPT_ADDRESS_PREFIX`].
-    pub const B58_SCRIPT_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x3c];
+    pub const B58_SCRIPT_ADDRESS_PREFIX: [u8; 2] = volt_params::B58_SCRIPT_ADDRESS_PREFIX;
 
     /// The HRP for a Bech32m-encoded regtest [ZIP 320] TEX address.
     ///
     /// [ZIP 320]: https://zips.z.cash/zip-0320
-    pub const HRP_TEX_ADDRESS: &str = "volttex";
+    pub const HRP_TEX_ADDRESS: &str = volt_params::HRP_TEX_ADDRESS;
 
     /// The HRP for a Bech32m-encoded regtest Revision 0 Unified Address.
     ///
     /// Defined in [ZIP 316].
     ///
     /// [ZIP 316]: https://zips.z.cash/zip-0316
-    pub const HRP_UNIFIED_ADDRESS: &str = "volt";
+    pub const HRP_UNIFIED_ADDRESS: &str = volt_params::HRP_UNIFIED_ADDRESS;
 
     /// The HRP for a Bech32m-encoded regtest Revision 0 Unified FVK.
     ///
     /// Defined in [ZIP 316].
     ///
     /// [ZIP 316]: https://zips.z.cash/zip-0316
-    pub const HRP_UNIFIED_FVK: &str = "voltview";
+    pub const HRP_UNIFIED_FVK: &str = volt_params::HRP_UNIFIED_FVK;
 
     /// The HRP for a Bech32m-encoded regtest Revision 0 Unified IVK.
     ///
     /// Defined in [ZIP 316].
     ///
     /// [ZIP 316]: https://zips.z.cash/zip-0316
-    pub const HRP_UNIFIED_IVK: &str = "voltivk";
+    pub const HRP_UNIFIED_IVK: &str = volt_params::HRP_UNIFIED_IVK;
 
     /// The HRP for a Bech32m-encoded regtest shielded-only Revision 2 Unified Address.
     ///
     /// Defined in [ZIP 316].
     ///
     /// [ZIP 316]: https://zips.z.cash/zip-0316
-    pub const HRP_UNIFIED_ADDRESS_R2: &str = "voltr2";
+    pub const HRP_UNIFIED_ADDRESS_R2: &str = volt_params::HRP_UNIFIED_ADDRESS_R2;
 
     /// The HRP for a Bech32m-encoded regtest transparent-including Revision 2 Unified
     /// Address.
@@ -247,21 +247,21 @@ pub mod regtest {
     /// Defined in [ZIP 316].
     ///
     /// [ZIP 316]: https://zips.z.cash/zip-0316
-    pub const HRP_UNIFIED_ADDRESS_R2_TI: &str = "voltr2t";
+    pub const HRP_UNIFIED_ADDRESS_R2_TI: &str = volt_params::HRP_UNIFIED_ADDRESS_R2_TI;
 
     /// The HRP for a Bech32m-encoded regtest Revision 2 Unified FVK.
     ///
     /// Defined in [ZIP 316].
     ///
     /// [ZIP 316]: https://zips.z.cash/zip-0316
-    pub const HRP_UNIFIED_FVK_R2: &str = "voltvf";
+    pub const HRP_UNIFIED_FVK_R2: &str = volt_params::HRP_UNIFIED_FVK_R2;
 
     /// The HRP for a Bech32m-encoded regtest Revision 2 Unified IVK.
     ///
     /// Defined in [ZIP 316].
     ///
     /// [ZIP 316]: https://zips.z.cash/zip-0316
-    pub const HRP_UNIFIED_IVK_R2: &str = "voltvi";
+    pub const HRP_UNIFIED_IVK_R2: &str = volt_params::HRP_UNIFIED_IVK_R2;
 }
 
 /// Returns the HRP for a Bech32-encoded Sapling payment address on the given network.

@@ -3,7 +3,7 @@
 //! ```text
 //! volt-node run [--data-dir DIR] [--listen ADDR] [--seed ADDR]... [--mine] [--blocks N]
 //!               [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]
-//!               [--pow blake2b|randomx] [--real-txs]
+//!               [--pow blake2b|randomx] [--real-txs] [--payout ADDR]...
 //! volt-node sim [--blocks ROUNDS] [--miners N] [--batches PER_BLOCK] [--pow blake2b|randomx]
 //!               [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]
 //! ```
@@ -29,7 +29,7 @@ const SIM_USAGE: &str =
 
 const RUN_USAGE: &str = "usage: volt-node run [--data-dir DIR] [--listen ADDR] [--seed ADDR]... \
      [--mine] [--blocks N] [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty] \
-     [--maturity STEPS] [--pow blake2b|randomx] [--real-txs]";
+     [--maturity STEPS] [--pow blake2b|randomx] [--real-txs] [--payout ADDR]...";
 
 /// Pulls the value that follows a flag.
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
@@ -140,6 +140,9 @@ struct RunArgs {
     maturity: Option<u32>,
     pow: PowKind,
     real_txs: bool,
+    /// Voltcash transparent addresses that mined rewards are paid to. Empty means the devnet
+    /// placeholder addresses.
+    payouts: Vec<Address>,
 }
 
 fn parse_run(args: Vec<String>) -> Result<RunArgs> {
@@ -155,6 +158,7 @@ fn parse_run(args: Vec<String>) -> Result<RunArgs> {
         maturity: None,
         pow: PowKind::Blake2b,
         real_txs: false,
+        payouts: Vec::new(),
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -178,6 +182,22 @@ fn parse_run(args: Vec<String>) -> Result<RunArgs> {
             }
             "--pow" => run.pow = pow_kind(&value(&mut args, &flag)?)?,
             "--real-txs" => run.real_txs = true,
+            "--payout" => {
+                let text = value(&mut args, &flag)?;
+                let hash = volt_params::transparent::decode_p2pkh(&text)
+                    .with_context(|| format!("--payout {text}"))?;
+                let address = Address::from_pub_key_hash(NetworkKind::Regtest, hash);
+                if run.payouts.contains(&address) {
+                    bail!("--payout {text} was given twice");
+                }
+                if run.payouts.len() >= volt_core::constants::MAX_COINBASE_PAYOUTS {
+                    bail!(
+                        "at most {} --payout addresses",
+                        volt_core::constants::MAX_COINBASE_PAYOUTS
+                    );
+                }
+                run.payouts.push(address);
+            }
             "-h" | "--help" => {
                 info!("{RUN_USAGE}");
                 std::process::exit(0);
@@ -215,7 +235,11 @@ fn run_node(args: Vec<String>) -> Result<()> {
     let mut config = NodeConfig::devnet(
         run.data_dir.clone(),
         pow_hasher(run.pow)?,
-        miner_addresses(run.tag),
+        if run.payouts.is_empty() {
+            miner_addresses(run.tag)
+        } else {
+            run.payouts.clone()
+        },
     );
     config.p2p.listen = run.listen;
     config.p2p.seeds = run.seeds.clone();
@@ -339,5 +363,28 @@ fn main() -> Result<()> {
             run_sim(args.collect())
         }
         _ => run_sim(args.collect()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn payout_takes_voltcash_addresses_only() {
+        let a = volt_params::transparent::encode_p2pkh(&[1; 20]);
+        let b = volt_params::transparent::encode_p2pkh(&[2; 20]);
+        let run = parse_run(args(&["--payout", &a, "--payout", &b])).unwrap();
+        assert_eq!(run.payouts.len(), 2);
+
+        // A Zcash address, a duplicate and garbage are all refused.
+        assert!(parse_run(args(&["--payout", "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs"])).is_err());
+        assert!(parse_run(args(&["--payout", &a, "--payout", &a])).is_err());
+        assert!(parse_run(args(&["--payout", "nonsense"])).is_err());
+        assert!(parse_run(args(&[])).unwrap().payouts.is_empty());
     }
 }

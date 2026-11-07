@@ -6525,10 +6525,18 @@ dependencies = [
  "volt-core",
  "volt-crypto",
  "volt-network",
+ "volt-params",
  "volt-state",
  "volt-storage",
  "volt-verify",
  "zebra-chain",
+]
+
+[[package]]
+name = "volt-params"
+version = "0.1.0"
+dependencies = [
+ "bs58",
 ]
 
 [[package]]

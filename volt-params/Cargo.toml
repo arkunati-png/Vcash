@@ -1,0 +1,14 @@
+[package]
+name = "volt-params"
+version = "0.1.0"
+description = "Voltcash network parameters: address prefixes, coin type and activation heights"
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.89"
+publish = false
+
+# No workspace inheritance on purpose: the Zebra-based node workspace and the wallet's own
+# workspace both depend on this crate by path.
+
+[dependencies]
+bs58 = { version = "0.5", default-features = false, features = ["alloc", "check"] }

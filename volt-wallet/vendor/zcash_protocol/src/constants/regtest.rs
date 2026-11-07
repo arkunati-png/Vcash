@@ -8,7 +8,7 @@
 
 /// Voltcash cointype (ZIP 32 / BIP 44 account path). Deliberately not 1, so that a Voltcash
 /// seed never derives the same keys as a Zcash testnet or regtest wallet.
-pub const COIN_TYPE: u32 = 22083;
+pub const COIN_TYPE: u32 = volt_params::COIN_TYPE;
 
 /// The HRP for a Bech32-encoded regtest Sapling [`ExtendedSpendingKey`].
 ///
@@ -44,7 +44,7 @@ pub const HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY: &str = "zxviewregtestsapling";
     since = "0.11.0",
     note = "Use `zcash_address::constants::regtest::HRP_SAPLING_PAYMENT_ADDRESS` instead."
 )]
-pub const HRP_SAPLING_PAYMENT_ADDRESS: &str = "volts";
+pub const HRP_SAPLING_PAYMENT_ADDRESS: &str = volt_params::HRP_SAPLING_PAYMENT_ADDRESS;
 
 /// The prefix for a Base58Check-encoded regtest Sprout address.
 ///
@@ -77,7 +77,7 @@ pub const B58_SECRET_KEY_PREFIX: [u8; 1] = [0xef];
     since = "0.11.0",
     note = "Use `zcash_address::constants::regtest::B58_PUBKEY_ADDRESS_PREFIX` instead."
 )]
-pub const B58_PUBKEY_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x37];
+pub const B58_PUBKEY_ADDRESS_PREFIX: [u8; 2] = volt_params::B58_PUBKEY_ADDRESS_PREFIX;
 
 /// The prefix for a Base58Check-encoded regtest transparent [`ScriptHash`].
 /// Same as the testnet prefix.
@@ -87,7 +87,7 @@ pub const B58_PUBKEY_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x37];
     since = "0.11.0",
     note = "Use `zcash_address::constants::regtest::B58_SCRIPT_ADDRESS_PREFIX` instead."
 )]
-pub const B58_SCRIPT_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x3c];
+pub const B58_SCRIPT_ADDRESS_PREFIX: [u8; 2] = volt_params::B58_SCRIPT_ADDRESS_PREFIX;
 
 /// The HRP for a Bech32m-encoded regtest [ZIP 320] TEX address.
 ///
@@ -96,7 +96,7 @@ pub const B58_SCRIPT_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x3c];
     since = "0.11.0",
     note = "Use `zcash_address::constants::regtest::HRP_TEX_ADDRESS` instead."
 )]
-pub const HRP_TEX_ADDRESS: &str = "volttex";
+pub const HRP_TEX_ADDRESS: &str = volt_params::HRP_TEX_ADDRESS;
 
 /// The HRP for a Bech32m-encoded regtest Unified Address.
 ///
@@ -107,18 +107,18 @@ pub const HRP_TEX_ADDRESS: &str = "volttex";
     since = "0.11.0",
     note = "Use `zcash_address::constants::regtest::HRP_UNIFIED_ADDRESS` instead."
 )]
-pub const HRP_UNIFIED_ADDRESS: &str = "volt";
+pub const HRP_UNIFIED_ADDRESS: &str = volt_params::HRP_UNIFIED_ADDRESS;
 
 /// The HRP for a Bech32m-encoded regtest Unified FVK.
 #[deprecated(
     since = "0.11.0",
     note = "Use `zcash_address::constants::regtest::HRP_UNIFIED_FVK` instead."
 )]
-pub const HRP_UNIFIED_FVK: &str = "voltview";
+pub const HRP_UNIFIED_FVK: &str = volt_params::HRP_UNIFIED_FVK;
 
 /// The HRP for a Bech32m-encoded regtest Unified IVK.
 #[deprecated(
     since = "0.11.0",
     note = "Use `zcash_address::constants::regtest::HRP_UNIFIED_IVK` instead."
 )]
-pub const HRP_UNIFIED_IVK: &str = "voltivk";
+pub const HRP_UNIFIED_IVK: &str = volt_params::HRP_UNIFIED_IVK;

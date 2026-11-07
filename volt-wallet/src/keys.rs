@@ -146,6 +146,8 @@ pub fn check_recipient(text: &str) -> Result<RecipientKind, String> {
 
 #[cfg(test)]
 mod tests {
+    use zcash_protocol::consensus::NetworkConstants;
+
     use super::*;
 
     // The standard BIP-39 test phrase: fixed so the test is reproducible.
@@ -161,6 +163,15 @@ mod tests {
         assert!(a.sapling.starts_with("volts1"), "{}", a.sapling);
         assert!(a.transparent.starts_with("Vo"), "{}", a.transparent);
         assert_ne!(a.unified, a.shielded);
+    }
+
+    #[test]
+    fn librustzcash_and_the_node_codec_agree_on_transparent_addresses() {
+        let a = addresses(&viewing_key(PHRASE).unwrap()).unwrap();
+        // The node decodes with volt-params; the wallet encodes with librustzcash.
+        let hash = volt_params::transparent::decode_p2pkh(&a.transparent).unwrap();
+        assert_eq!(volt_params::transparent::encode_p2pkh(&hash), a.transparent);
+        assert_eq!(volt_params::COIN_TYPE, NETWORK_TYPE.coin_type());
     }
 
     #[test]

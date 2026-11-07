@@ -1,4 +1,4 @@
-//! Voltcash's librustzcash network parameters.
+//! Voltcash's librustzcash network parameters. The values themselves live in `volt-params`.
 //!
 //! librustzcash's `NetworkType` is a closed enum (main, test, regtest). Voltcash uses the
 //! `Regtest` slot, and `vendor/zcash_address` plus `vendor/zcash_protocol` replace that slot's
@@ -25,7 +25,7 @@ impl Parameters for VoltNetwork {
             // Voltcash accepts Sapling and Orchard v5 transactions only and refuses Ironwood,
             // so everything up to NU6.3 is active from the first block and nothing newer is.
             NetworkUpgrade::Nu7 => None,
-            _ => Some(BlockHeight::from_u32(1)),
+            _ => Some(BlockHeight::from_u32(volt_params::ACTIVE_FROM_HEIGHT)),
         }
     }
 }

@@ -26,6 +26,7 @@ wgpu = { version = "27", default-features = false, features = ["dx12", "wgsl"] }
 zcash_address = "0.14"
 zcash_keys = { version = "0.17", features = ["transparent-inputs", "orchard", "sapling"] }
 zcash_protocol = "0.11"
+volt-params = { path = "../volt-params" }
 zcash_transparent = "0.11"
 zeroize = "1.9.1"
 zip32 = "0.3"

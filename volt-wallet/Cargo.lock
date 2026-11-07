@@ -3283,6 +3283,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "volt-params"
+version = "0.1.0"
+dependencies = [
+ "bs58",
+]
+
+[[package]]
 name = "volt-wallet"
 version = "0.1.0"
 dependencies = [
@@ -3296,6 +3303,7 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "volt-params",
  "wgpu",
  "winres",
  "zcash_address",
@@ -3980,6 +3988,7 @@ dependencies = [
  "bs58",
  "corez",
  "f4jumble",
+ "volt-params",
  "zcash_encoding",
  "zcash_protocol",
 ]
@@ -4045,6 +4054,7 @@ dependencies = [
  "document-features",
  "hex",
  "memuse",
+ "volt-params",
  "zcash_encoding",
 ]
 
