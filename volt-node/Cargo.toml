@@ -1,7 +1,7 @@
 [package]
 name = "volt-node"
 version = "0.1.0"
-description = "Voltcash devnet node: multi-miner GHOSTDAG simulation wiring consensus, state, PoW and gossip together"
+description = "Voltcash node: persistent consensus, mempool, TCP peers and a miner, plus a multi-miner simulation"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -14,17 +14,28 @@ default = []
 # Use the real RandomX engine instead of the Blake2b stand-in. Needs CMake and a C++ compiler.
 randomx = ["volt-crypto/randomx"]
 
+# Verify Sapling/Orchard proofs and transparent scripts of real Zcash-format transactions.
+# Needs libclang to build (zcashd's script interpreter is bound with bindgen).
+zebra-proofs = ["dep:volt-verify"]
+
 [dependencies]
 volt-consensus = { path = "../volt-consensus" }
 volt-core = { path = "../volt-core" }
 volt-crypto = { path = "../volt-crypto" }
 volt-network = { path = "../volt-network" }
 volt-state = { path = "../volt-state" }
+volt-storage = { path = "../volt-storage" }
+volt-verify = { path = "../volt-verify", optional = true }
 zebra-chain = { path = "../zebra-chain" }
 
 anyhow = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

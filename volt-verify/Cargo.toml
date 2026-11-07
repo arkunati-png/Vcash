@@ -1,0 +1,30 @@
+[package]
+name = "volt-verify"
+version = "0.1.0"
+description = "Voltcash proof and signature verification for Zcash-format transactions, built on librustzcash and zebra-script"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+volt-core = { path = "../volt-core" }
+zebra-chain = { path = "../zebra-chain" }
+zebra-script = { path = "../zebra-script" }
+
+orchard = { workspace = true }
+sapling-crypto = { workspace = true, features = ["multicore"] }
+zcash_proofs = { workspace = true, features = ["multicore", "bundled-prover"] }
+
+parking_lot = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+zebra-chain = { path = "../zebra-chain", features = ["proptest-impl"] }
+zebra-test = { path = "../zebra-test" }
+
+[lints]
+workspace = true

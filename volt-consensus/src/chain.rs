@@ -20,10 +20,10 @@
 //! step is [`FINALITY_DEPTH`] steps deep, and no step that deep is ever reverted. A reorg that
 //! would cross that line is refused.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
-use volt_core::{constants::FINALITY_DEPTH, VoltHash};
-use volt_state::{BlockUndo, EpochSettlement, PolReserve, RamUtxoStore, StateError};
+use volt_core::{constants::FINALITY_DEPTH, Economics, TxVerifier, VoltHash};
+use volt_state::{ApplyRules, BlockUndo, EpochSettlement, PolReserve, RamUtxoStore, StateError};
 use zebra_chain::block::Height;
 
 use crate::{
@@ -63,6 +63,9 @@ pub struct AdvanceReport {
 /// UTXO state, epoch accounting and the POL reserve for the accepted chain.
 #[derive(Debug)]
 pub struct ChainState {
+    economics: Economics,
+    verifier: Arc<dyn TxVerifier>,
+    coinbase_maturity: u32,
     store: RamUtxoStore,
     reserve: PolReserve,
     epoch: EpochAccumulator,
@@ -74,8 +77,16 @@ pub struct ChainState {
 
 impl ChainState {
     /// Creates the state at genesis.
-    pub fn new(genesis: VoltHash) -> Self {
+    pub fn new(
+        genesis: VoltHash,
+        economics: Economics,
+        verifier: Arc<dyn TxVerifier>,
+        coinbase_maturity: u32,
+    ) -> Self {
         Self {
+            economics,
+            verifier,
+            coinbase_maturity,
             store: RamUtxoStore::new(),
             reserve: PolReserve::new(),
             epoch: EpochAccumulator::new(),
@@ -212,9 +223,13 @@ impl ChainState {
                 .get(&member)
                 .expect("every DAG block has a stored body");
 
-            let applied = self
-                .store
-                .apply_block(body.block.coinbase.outputs(), &body.txs, height);
+            let rules = ApplyRules {
+                verifier: self.verifier.as_ref(),
+                coinbase_maturity: self.coinbase_maturity,
+            };
+            let applied =
+                self.store
+                    .apply_block(body.block.coinbase.outputs(), &body.txs, height, &rules);
             match applied {
                 Ok(undo) => step.undo.merge(undo),
                 Err(error) => {
@@ -229,7 +244,12 @@ impl ChainState {
 
             let completed = self
                 .epoch
-                .add_block(&body.block.coinbase, body.fees)
+                .add_block(
+                    &body.block.coinbase,
+                    body.fees,
+                    &self.economics,
+                    body.reward_score,
+                )
                 .and_then(|()| {
                     if self.epoch.is_complete() {
                         self.epoch.settle().map(Some)

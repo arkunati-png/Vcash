@@ -12,9 +12,9 @@ pub struct EpochSettlement {
     pub blocks: u64,
     /// The epoch's total reward: base emission plus fees.
     pub total_reward: Amount<NonNegative>,
-    /// The half paid to RandomX miners.
+    /// The part paid to RandomX miners, according to the schedule.
     pub miner_amount: Amount<NonNegative>,
-    /// The half locked into the DEX reserves.
+    /// The part locked into the DEX reserves, according to the schedule.
     pub pol_amount: Amount<NonNegative>,
 }
 
@@ -30,15 +30,6 @@ pub enum PolError {
         pol: i64,
         /// The stated total.
         total: i64,
-    },
-
-    /// The split is not exactly 50/50.
-    #[error("settlement is not an exact 50/50 split: miners {miner}, pol {pol}")]
-    NotFiftyFifty {
-        /// The miner amount.
-        miner: i64,
-        /// The POL amount.
-        pol: i64,
     },
 
     /// The epoch is not the next one to settle.
@@ -85,10 +76,11 @@ impl PolReserve {
         self.settlements.len() as u64 // lossless: a Vec length always fits in u64
     }
 
-    /// Locks the POL half of an epoch settlement forever.
+    /// Locks the POL part of an epoch settlement forever.
     ///
-    /// Checks that the epoch is the next one, that the parts add up to the total, and that
-    /// the split is exactly 50/50.
+    /// Checks that the epoch is the next one and that the parts add up to the total. Whether the
+    /// split follows the monetary schedule is verified by consensus before it gets here: the
+    /// schedule can change the miner share over time, so the reserve does not hard-code one.
     pub fn lock(&mut self, settlement: EpochSettlement) -> Result<(), PolError> {
         if settlement.epoch != self.next_epoch() {
             return Err(PolError::OutOfOrder {
@@ -103,10 +95,6 @@ impl PolReserve {
         if miner.checked_add(pol) != Some(total) {
             return Err(PolError::PartsDoNotSumToTotal { miner, pol, total });
         }
-        if miner != pol {
-            return Err(PolError::NotFiftyFifty { miner, pol });
-        }
-
         self.locked = (self.locked + settlement.pol_amount).map_err(|_| PolError::Overflow)?;
         self.settlements.push(settlement);
         Ok(())
@@ -128,17 +116,21 @@ mod tests {
     }
 
     #[test]
-    fn locks_only_exact_halves_in_order() {
+    fn locks_consistent_settlements_in_order() {
         let mut reserve = PolReserve::new();
         reserve.lock(settlement(0, 500, 500)).unwrap();
-        reserve.lock(settlement(1, 300, 300)).unwrap();
+        // A 70/30 epoch under the taper: only the POL part (300) is locked.
+        reserve.lock(settlement(1, 700, 300)).unwrap();
         assert_eq!(reserve.locked().zatoshis(), 800);
 
+        let mut lying = settlement(2, 301, 300);
+        lying.total_reward = Amount::new(999);
         assert_eq!(
-            reserve.lock(settlement(2, 301, 300)),
-            Err(PolError::NotFiftyFifty {
+            reserve.lock(lying),
+            Err(PolError::PartsDoNotSumToTotal {
                 miner: 301,
-                pol: 300
+                pol: 300,
+                total: 999
             })
         );
         assert_eq!(

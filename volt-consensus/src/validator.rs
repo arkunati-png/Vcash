@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use volt_core::{
     constants::{
-        MAX_BATCHES_PER_BLOCK, MAX_BLOCK_PARENTS, MAX_FUTURE_TIMESTAMP_DRIFT_MS, POW_LIMIT_BITS,
+        MAX_BATCHES_PER_BLOCK, MAX_BLOCK_ACTIONS, MAX_BLOCK_PARENTS, MAX_BLOCK_TX_BYTES,
+        MAX_FUTURE_TIMESTAMP_DRIFT_MS, POW_LIMIT_BITS,
     },
-    BatchableTx, TxDecoder, VoltBlock,
+    BatchableTx, Economics, TxDecoder, VoltBlock,
 };
 use volt_crypto::{meets_target, target_work, PowHasher};
 use zebra_chain::amount::{Amount, NonNegative};
@@ -33,6 +34,8 @@ pub struct StoredBlock {
     pub fees: Amount<NonNegative>,
     /// The work this block represents.
     pub work: u128,
+    /// The score the reward schedule was evaluated at: the selected parent's blue score.
+    pub reward_score: u64,
 }
 
 /// Validates blocks against a DAG.
@@ -40,6 +43,7 @@ pub struct StoredBlock {
 pub struct BlockValidator {
     pow: Arc<dyn PowHasher>,
     decoder: Arc<dyn TxDecoder>,
+    economics: Economics,
 }
 
 impl std::fmt::Debug for BlockValidator {
@@ -49,9 +53,19 @@ impl std::fmt::Debug for BlockValidator {
 }
 
 impl BlockValidator {
-    /// Creates a validator using `pow` for proof-of-work and `decoder` for batch transactions.
-    pub fn new(pow: Arc<dyn PowHasher>, decoder: Arc<dyn TxDecoder>) -> Self {
-        Self { pow, decoder }
+    /// Creates a validator using `pow` for proof-of-work, `decoder` for batch transactions and
+    /// `economics` for the reward schedule.
+    pub fn new(pow: Arc<dyn PowHasher>, decoder: Arc<dyn TxDecoder>, economics: Economics) -> Self {
+        Self {
+            pow,
+            decoder,
+            economics,
+        }
+    }
+
+    /// The monetary policy.
+    pub fn economics(&self) -> &Economics {
+        &self.economics
     }
 
     /// The PoW hasher.
@@ -88,6 +102,7 @@ impl BlockValidator {
             txs: Vec::new(),
             fees: Amount::zero(),
             work,
+            reward_score: 0,
         })
     }
 
@@ -173,19 +188,44 @@ impl BlockValidator {
         // Batches: size, root, fees, no coinbases, no duplicates.
         let mut txs = Vec::with_capacity(block.batches.len());
         let mut fees = Amount::<NonNegative>::zero();
+        let mut tx_bytes = 0usize;
+        let mut actions = 0u64;
         for batch in &block.batches {
-            txs.push(batch.unpack(self.decoder.as_ref())?);
+            let unpacked = batch.unpack(self.decoder.as_ref())?;
+            tx_bytes = tx_bytes.saturating_add(batch.raw_txs().iter().map(Vec::len).sum::<usize>());
+            actions = actions.saturating_add(unpacked.iter().map(|tx| tx.logical_actions()).sum());
+            txs.push(unpacked);
             fees = (fees + batch.total_fees()).map_err(|_| ConsensusError::FeeOverflow)?;
         }
 
-        // The 100-address cap and the exact 50/50 split.
-        check_coinbase(&block.coinbase, fees)?;
+        // Block-wide caps bound the relay and proof-verification work one block can cost.
+        if tx_bytes > MAX_BLOCK_TX_BYTES {
+            return Err(ConsensusError::BlockTooLarge {
+                bytes: tx_bytes,
+                max: MAX_BLOCK_TX_BYTES,
+            });
+        }
+        if actions > MAX_BLOCK_ACTIONS {
+            return Err(ConsensusError::TooManyActions {
+                actions,
+                max: MAX_BLOCK_ACTIONS,
+            });
+        }
+
+        // The 100-address cap, the minimum payout and the scheduled miner / POL split.
+        let reward_score = dag
+            .get(&selected_parent)
+            .expect("the selected parent was checked above")
+            .ghostdag
+            .blue_score;
+        check_coinbase(&block.coinbase, fees, &self.economics, reward_score)?;
 
         Ok(StoredBlock {
             block,
             txs,
             fees,
             work,
+            reward_score,
         })
     }
 }

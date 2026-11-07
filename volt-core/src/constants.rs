@@ -44,14 +44,25 @@ pub const TRANSPARENT_FEE: i64 = VOLT / 10_000;
 /// The fee for a shielded (Sapling or Orchard) transaction: 0.0002 VOLT.
 pub const SHIELDED_FEE: i64 = VOLT / 5_000;
 
-/// The base emission paid by every credited block, before fees: 0.05 VOLT.
-///
-/// This is a flat devnet schedule. A production emission curve is a separate design decision.
-pub const BASE_EMISSION_PER_BLOCK: i64 = VOLT / 20;
+/// The fee per logical action (a transparent input/output pair, a shielded spend/output pair or
+/// an Orchard action). A transaction pays `max(tier fee, this * actions, size fee)`, so a big
+/// transaction cannot pay the same as a tiny one.
+pub const MARGINAL_FEE_PER_ACTION: i64 = 2_000;
 
-/// The percentage of each block's total reward paid to miners.
-/// The rest is locked as protocol-owned liquidity.
-pub const MINER_SHARE_PERCENT: i64 = 50;
+/// The size-based fee floor, per started 1,000 bytes of serialized transaction.
+pub const FEE_PER_KB: i64 = 2_000;
+
+/// The most serialized transaction bytes one block may carry across all its batches.
+pub const MAX_BLOCK_TX_BYTES: usize = 2_000_000;
+
+/// The most logical actions one block may carry. This bounds proof-verification work per block.
+pub const MAX_BLOCK_ACTIONS: u64 = 20_000;
+
+/// How many chain steps a coinbase output must age before it can be spent.
+pub const COINBASE_MATURITY: u32 = 100;
+
+/// The default maximum number of transactions held in the mempool.
+pub const MEMPOOL_MAX_TXS: usize = 50_000;
 
 /// The maximum distance a block timestamp may be ahead of the local clock, in milliseconds.
 pub const MAX_FUTURE_TIMESTAMP_DRIFT_MS: u64 = 60_000;
@@ -82,11 +93,11 @@ pub const MAX_TX_ITEMS: usize = 10_000;
 /// The maximum length of the coinbase extra data, in bytes.
 pub const MAX_COINBASE_EXTRA_BYTES: usize = 100;
 
-// Every block reward must split exactly 50/50 with no rounding remainder.
-// Emission and both fee tiers are even, so every sum of them is even too.
-const _: () = assert!(BASE_EMISSION_PER_BLOCK % 2 == 0);
+// A reward must split exactly in half when the miner share is 50%. Every fee is a multiple of 2,
+// and emission is forced even, so every sum of them is even too.
 const _: () = assert!(TRANSPARENT_FEE % 2 == 0);
 const _: () = assert!(SHIELDED_FEE % 2 == 0);
+const _: () = assert!(MARGINAL_FEE_PER_ACTION % 2 == 0);
+const _: () = assert!(FEE_PER_KB % 2 == 0);
 const _: () = assert!(TRANSPARENT_FEE == 10_000);
 const _: () = assert!(SHIELDED_FEE == 20_000);
-const _: () = assert!(MINER_SHARE_PERCENT * 2 == 100);

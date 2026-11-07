@@ -1,11 +1,11 @@
-//! Coinbase rules: the 100-payout cap and the 50/50 miner / POL split.
+//! Coinbase rules: the 100-payout cap, the minimum payout and the scheduled miner / POL split.
 
 use std::collections::HashSet;
 
 use thiserror::Error;
 use volt_core::{
-    constants::{BASE_EMISSION_PER_BLOCK, MAX_COINBASE_EXTRA_BYTES, MAX_COINBASE_PAYOUTS},
-    Coinbase, Payout,
+    constants::{MAX_COINBASE_EXTRA_BYTES, MAX_COINBASE_PAYOUTS},
+    Coinbase, Economics, EconomicsError, Payout,
 };
 use zebra_chain::{
     amount::{Amount, NonNegative},
@@ -24,27 +24,32 @@ pub enum CoinbaseError {
         max: usize,
     },
 
-    /// A payout is zero.
-    #[error("coinbase contains a zero payout")]
-    ZeroPayout,
+    /// A payout is below the minimum, which includes zero.
+    #[error("payout of {amount} is below the minimum of {min}")]
+    DustPayout {
+        /// The offending payout.
+        amount: i64,
+        /// The minimum payout.
+        min: i64,
+    },
 
-    /// The block reward cannot be split into two equal halves.
-    #[error("block reward {0} cannot be split evenly")]
-    OddReward(i64),
+    /// The block reward cannot be split.
+    #[error(transparent)]
+    Split(#[from] EconomicsError),
 
-    /// The miners are not paid exactly half of the block reward.
-    #[error("miners are paid {got}, expected exactly half of the reward: {expected}")]
+    /// The miners are not paid exactly their scheduled share of the block reward.
+    #[error("miners are paid {got}, expected exactly their scheduled share: {expected}")]
     WrongMinerTotal {
-        /// Half of the block reward.
+        /// The scheduled miner share of the reward.
         expected: i64,
         /// The sum of the payouts.
         got: i64,
     },
 
-    /// The POL contribution is not exactly half of the block reward.
-    #[error("POL contribution is {got}, expected exactly half of the reward: {expected}")]
+    /// The POL contribution is not exactly the rest of the block reward.
+    #[error("POL contribution is {got}, expected exactly the scheduled rest: {expected}")]
     WrongPolContribution {
-        /// Half of the block reward.
+        /// The scheduled POL share of the reward.
         expected: i64,
         /// The POL amount in the coinbase.
         got: i64,
@@ -58,38 +63,43 @@ pub enum CoinbaseError {
     #[error("reward out of range")]
     Overflow,
 
-    /// There is a miner share but nobody to pay it to.
+    /// There is a miner share but nobody to pay it to, or it is too small to pay anyone.
     #[error("no payout addresses")]
     NoPayouts,
 }
 
-/// The reward of a block: the base emission plus the fees of its batches.
-pub fn block_reward(fees: Amount<NonNegative>) -> Result<Amount<NonNegative>, CoinbaseError> {
-    (Amount::<NonNegative>::new(BASE_EMISSION_PER_BLOCK) + fees)
+/// The reward of a block: the scheduled emission plus the fees of its batches.
+pub fn block_reward(
+    economics: &Economics,
+    score: u64,
+    fees: Amount<NonNegative>,
+) -> Result<Amount<NonNegative>, CoinbaseError> {
+    (Amount::<NonNegative>::new(economics.emission(score)) + fees)
         .map_err(|_| CoinbaseError::Overflow)
 }
 
-/// Splits `total` exactly in half: `(miners, pol)`.
-///
-/// Fails if `total` is odd, because an exact 50/50 split is then impossible. Emission and both
-/// fee tiers are even, so a valid block reward is always even.
+/// Splits `reward` into `(miners, pol)` for a block with the given reward score.
 pub fn split_reward(
-    total: Amount<NonNegative>,
+    economics: &Economics,
+    score: u64,
+    reward: Amount<NonNegative>,
 ) -> Result<(Amount<NonNegative>, Amount<NonNegative>), CoinbaseError> {
-    let zats = total.zatoshis();
-    if zats % 2 != 0 {
-        return Err(CoinbaseError::OddReward(zats));
-    }
-    Ok((Amount::new(zats / 2), Amount::new(zats / 2)))
+    let (miners, pol) = economics.split(reward.zatoshis(), score)?;
+    Ok((Amount::new(miners), Amount::new(pol)))
 }
 
 /// Checks a coinbase against the rewards of its block.
 ///
 /// 1. At most [`MAX_COINBASE_PAYOUTS`] **unique** payout addresses.
-/// 2. No zero payouts.
-/// 3. Payouts to miners sum to exactly 50% of `emission + fees`.
-/// 4. The POL contribution is exactly the other 50%.
-pub fn check_coinbase(coinbase: &Coinbase, fees: Amount<NonNegative>) -> Result<(), CoinbaseError> {
+/// 2. Every payout is at least the minimum payout, which also rules out zero payouts.
+/// 3. Payouts to miners sum to exactly the scheduled miner share of `emission + fees`.
+/// 4. The POL contribution is exactly the rest.
+pub fn check_coinbase(
+    coinbase: &Coinbase,
+    fees: Amount<NonNegative>,
+    economics: &Economics,
+    score: u64,
+) -> Result<(), CoinbaseError> {
     if coinbase.extra.len() > MAX_COINBASE_EXTRA_BYTES {
         return Err(CoinbaseError::ExtraTooLong(coinbase.extra.len()));
     }
@@ -104,40 +114,49 @@ pub fn check_coinbase(coinbase: &Coinbase, fees: Amount<NonNegative>) -> Result<
 
     let mut paid = Amount::<NonNegative>::zero();
     for payout in &coinbase.payouts {
-        if payout.amount.is_zero() {
-            return Err(CoinbaseError::ZeroPayout);
+        if payout.amount.zatoshis() < economics.min_payout {
+            return Err(CoinbaseError::DustPayout {
+                amount: payout.amount.zatoshis(),
+                min: economics.min_payout,
+            });
         }
         paid = (paid + payout.amount).map_err(|_| CoinbaseError::Overflow)?;
     }
 
-    let (miners_half, pol_half) = split_reward(block_reward(fees)?)?;
-    if paid != miners_half {
+    let reward = block_reward(economics, score, fees)?;
+    let (miners_share, pol_share) = split_reward(economics, score, reward)?;
+    if paid != miners_share {
         return Err(CoinbaseError::WrongMinerTotal {
-            expected: miners_half.zatoshis(),
+            expected: miners_share.zatoshis(),
             got: paid.zatoshis(),
         });
     }
-    if coinbase.pol_contribution != pol_half {
+    if coinbase.pol_contribution != pol_share {
         return Err(CoinbaseError::WrongPolContribution {
-            expected: pol_half.zatoshis(),
+            expected: pol_share.zatoshis(),
             got: coinbase.pol_contribution.zatoshis(),
         });
     }
-    if !miners_half.is_zero() && coinbase.payouts.is_empty() {
+    if !miners_share.is_zero() && coinbase.payouts.is_empty() {
         return Err(CoinbaseError::NoPayouts);
     }
     Ok(())
 }
 
-/// Builds a valid coinbase for a block with `fees`, paying the miner half evenly to up to
+/// Builds a valid coinbase for a block with `fees`, paying the miner share evenly to up to
 /// [`MAX_COINBASE_PAYOUTS`] unique addresses taken from `miners` (the first payout absorbs any
 /// rounding remainder).
+///
+/// Uses fewer addresses when the share is too small to give each at least the minimum payout.
 pub fn build_coinbase(
     fees: Amount<NonNegative>,
     miners: &[Address],
     extra: Vec<u8>,
+    economics: &Economics,
+    score: u64,
 ) -> Result<Coinbase, CoinbaseError> {
-    let (miners_half, pol_half) = split_reward(block_reward(fees)?)?;
+    let reward = block_reward(economics, score, fees)?;
+    let (miners_share, pol_share) = split_reward(economics, score, reward)?;
 
     let mut seen = HashSet::new();
     let addresses: Vec<Address> = miners
@@ -146,17 +165,16 @@ pub fn build_coinbase(
         .take(MAX_COINBASE_PAYOUTS)
         .copied()
         .collect();
-    if addresses.is_empty() {
+
+    let share = miners_share.zatoshis();
+    let affordable = usize::try_from(share / economics.min_payout.max(1)).unwrap_or(usize::MAX);
+    let count = addresses.len().min(affordable);
+    if count == 0 {
         return Err(CoinbaseError::NoPayouts);
     }
 
-    // Never create zero payouts: use fewer addresses if the share is tiny.
-    let half = miners_half.zatoshis();
-    let count = addresses
-        .len()
-        .min(usize::try_from(half).unwrap_or(usize::MAX).max(1));
-    let each = half / count as i64; // lossless: count <= 100
-    let remainder = half - each * count as i64; // lossless: count <= 100
+    let each = share / count as i64; // lossless: count <= 100
+    let remainder = share - each * count as i64; // lossless: count <= 100
 
     let payouts = addresses
         .into_iter()
@@ -170,7 +188,7 @@ pub fn build_coinbase(
 
     Ok(Coinbase {
         payouts,
-        pol_contribution: pol_half,
+        pol_contribution: pol_share,
         extra,
     })
 }
@@ -178,6 +196,7 @@ pub fn build_coinbase(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use volt_core::constants::VOLT;
     use zebra_chain::parameters::NetworkKind;
 
     fn addr(n: u8) -> Address {
@@ -188,54 +207,75 @@ mod tests {
         (0..n).map(|i| addr(i as u8)).collect()
     }
 
+    const FLAT: Economics = Economics::fifty_fifty();
+    const EMISSION: i64 = VOLT / 20;
+
+    fn build(fees: i64, n: usize) -> Coinbase {
+        build_coinbase(Amount::new(fees), &addrs(n), vec![], &FLAT, 0).unwrap()
+    }
+
     #[test]
     fn built_coinbase_is_valid_and_splits_50_50() {
         let fees = Amount::new(150_000);
-        let cb = build_coinbase(fees, &addrs(7), vec![]).unwrap();
-        check_coinbase(&cb, fees).unwrap();
+        let cb = build_coinbase(fees, &addrs(7), vec![], &FLAT, 0).unwrap();
+        check_coinbase(&cb, fees, &FLAT, 0).unwrap();
 
-        let reward = BASE_EMISSION_PER_BLOCK + 150_000;
+        let reward = EMISSION + 150_000;
         let paid: i64 = cb.payouts.iter().map(|p| p.amount.zatoshis()).sum();
         assert_eq!(paid, reward / 2);
         assert_eq!(cb.pol_contribution.zatoshis(), reward / 2);
     }
 
     #[test]
+    fn the_split_follows_the_taper() {
+        let econ = Economics::mainnet();
+        let fees = Amount::new(0);
+
+        // Early: 70% to miners, 30% to POL.
+        let early = build_coinbase(fees, &addrs(5), vec![], &econ, 0).unwrap();
+        check_coinbase(&early, fees, &econ, 0).unwrap();
+        let paid: i64 = early.payouts.iter().map(|p| p.amount.zatoshis()).sum();
+        assert_eq!(paid, EMISSION * 7 / 10);
+        assert_eq!(early.pol_contribution.zatoshis(), EMISSION * 3 / 10);
+
+        // The same coinbase is wrong once the schedule has moved on to 50%.
+        let late = 4 * econ.miner_share_taper_interval;
+        assert!(matches!(
+            check_coinbase(&early, fees, &econ, late),
+            Err(CoinbaseError::WrongMinerTotal { .. })
+        ));
+    }
+
+    #[test]
     fn exactly_100_unique_addresses_pass_and_101_fail() {
         let fees = Amount::new(10_000);
 
-        let cb = build_coinbase(fees, &addrs(100), vec![]).unwrap();
+        let cb = build(10_000, 100);
         assert_eq!(cb.payouts.len(), 100);
-        check_coinbase(&cb, fees).unwrap();
+        check_coinbase(&cb, fees, &FLAT, 0).unwrap();
 
         // The builder caps at 100; a hand-made 101-address coinbase must be rejected.
         let mut cb101 = cb.clone();
         let half = cb101.payouts[1].amount;
-        cb101.payouts[1].amount = Amount::new(half.zatoshis() - 1);
+        cb101.payouts[1].amount = Amount::new(half.zatoshis() - 10_000);
         cb101.payouts.push(Payout {
             address: addr(200),
-            amount: Amount::new(1),
+            amount: Amount::new(10_000),
         });
         assert_eq!(
-            check_coinbase(&cb101, fees),
+            check_coinbase(&cb101, fees, &FLAT, 0),
             Err(CoinbaseError::TooManyPayoutAddresses {
                 count: 101,
                 max: 100
             })
         );
-        assert_eq!(
-            build_coinbase(fees, &addrs(150), vec![])
-                .unwrap()
-                .payouts
-                .len(),
-            100
-        );
+        assert_eq!(build(10_000, 150).payouts.len(), 100);
     }
 
     #[test]
     fn duplicate_addresses_count_once() {
         let fees = Amount::new(0);
-        let mut cb = build_coinbase(fees, &addrs(100), vec![]).unwrap();
+        let mut cb = build(0, 100);
         // Split the first payout into two payouts to the same address: still 100 unique.
         let first = cb.payouts[0].clone();
         let part = first.amount.zatoshis() / 2;
@@ -245,39 +285,85 @@ mod tests {
             amount: Amount::new(part),
         });
         assert_eq!(cb.payouts.len(), 101);
-        check_coinbase(&cb, fees).unwrap();
+        check_coinbase(&cb, fees, &FLAT, 0).unwrap();
     }
 
     #[test]
-    fn rejects_wrong_split_and_zero_payouts() {
+    fn dust_payouts_are_rejected_so_splitting_costs_something() {
         let fees = Amount::new(20_000);
-        let good = build_coinbase(fees, &addrs(3), vec![]).unwrap();
+        let good = build(20_000, 3);
+
+        let mut dusty = good.clone();
+        // Peel 5_000 off the first payout into a new address: below the 10_000 minimum.
+        dusty.payouts[0].amount = Amount::new(dusty.payouts[0].amount.zatoshis() - 5_000);
+        dusty.payouts.push(Payout {
+            address: addr(77),
+            amount: Amount::new(5_000),
+        });
+        assert_eq!(
+            check_coinbase(&dusty, fees, &FLAT, 0),
+            Err(CoinbaseError::DustPayout {
+                amount: 5_000,
+                min: 10_000
+            })
+        );
+
+        let mut zero = good;
+        zero.payouts[0].amount = Amount::new(0);
+        assert!(matches!(
+            check_coinbase(&zero, fees, &FLAT, 0),
+            Err(CoinbaseError::DustPayout { amount: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn builder_uses_fewer_addresses_when_the_share_is_small() {
+        // A share of 25_000 with a 10_000 minimum can only pay 2 addresses.
+        let tiny = Economics {
+            initial_emission: 50_000,
+            tail_emission: 50_000,
+            ..FLAT
+        };
+        let cb = build_coinbase(Amount::new(0), &addrs(10), vec![], &tiny, 0).unwrap();
+        assert_eq!(cb.payouts.len(), 2);
+        check_coinbase(&cb, Amount::new(0), &tiny, 0).unwrap();
+
+        let none = Economics {
+            initial_emission: 10_000,
+            tail_emission: 10_000,
+            ..FLAT
+        };
+        assert_eq!(
+            build_coinbase(Amount::new(0), &addrs(10), vec![], &none, 0),
+            Err(CoinbaseError::NoPayouts)
+        );
+    }
+
+    #[test]
+    fn rejects_a_skimmed_split() {
+        let fees = Amount::new(20_000);
+        let good = build(20_000, 3);
 
         let mut skim = good.clone();
         skim.pol_contribution = Amount::new(good.pol_contribution.zatoshis() - 2);
         assert!(matches!(
-            check_coinbase(&skim, fees),
+            check_coinbase(&skim, fees, &FLAT, 0),
             Err(CoinbaseError::WrongPolContribution { .. })
         ));
 
-        let mut greedy = good.clone();
+        let mut greedy = good;
         greedy.payouts[0].amount = Amount::new(greedy.payouts[0].amount.zatoshis() + 2);
         assert!(matches!(
-            check_coinbase(&greedy, fees),
+            check_coinbase(&greedy, fees, &FLAT, 0),
             Err(CoinbaseError::WrongMinerTotal { .. })
         ));
-
-        let mut zero = good;
-        zero.payouts[0].amount = Amount::new(0);
-        assert_eq!(check_coinbase(&zero, fees), Err(CoinbaseError::ZeroPayout));
     }
 
     #[test]
-    fn odd_rewards_cannot_split() {
-        assert_eq!(
-            split_reward(Amount::new(7)),
-            Err(CoinbaseError::OddReward(7))
-        );
-        assert!(build_coinbase(Amount::new(1), &addrs(1), vec![]).is_err());
+    fn odd_rewards_cannot_split_at_fifty_percent() {
+        assert!(matches!(
+            build_coinbase(Amount::new(1), &addrs(1), vec![], &FLAT, 0),
+            Err(CoinbaseError::Split(EconomicsError::OddReward(_)))
+        ));
     }
 }

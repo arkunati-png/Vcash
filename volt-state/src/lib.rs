@@ -8,4 +8,4 @@ mod pol;
 mod utxo;
 
 pub use pol::{EpochSettlement, PolError, PolReserve};
-pub use utxo::{BlockUndo, RamUtxoStore, StateError};
+pub use utxo::{ApplyRules, BlockUndo, RamUtxoStore, StateError};

@@ -7,7 +7,9 @@ use std::{
 
 use dashmap::DashMap;
 use thiserror::Error;
-use volt_core::{calculate_tx_fee, BatchableTx, Nullifier};
+use volt_core::{
+    calculate_tx_fee, BatchableTx, NoVerification, Nullifier, TxVerifier, TxVerifyItem, VerifyError,
+};
 use zebra_chain::{
     block::Height,
     transaction,
@@ -45,6 +47,42 @@ pub enum StateError {
         /// The required fee.
         fee: i128,
     },
+
+    /// A coinbase output was spent before it matured.
+    #[error("coinbase output {outpoint:?} is {age} steps old, {required} are required")]
+    ImmatureCoinbase {
+        /// The output being spent.
+        outpoint: OutPoint,
+        /// How many steps old it is.
+        age: u32,
+        /// How many it needs.
+        required: u32,
+    },
+
+    /// A transaction's proofs or signatures are invalid.
+    #[error(transparent)]
+    Verification(#[from] VerifyError),
+}
+
+/// The consensus rules a batch is applied under, beyond value balance.
+#[derive(Clone, Copy, Debug)]
+pub struct ApplyRules<'a> {
+    /// Verifies proofs and signatures.
+    pub verifier: &'a dyn TxVerifier,
+    /// How many chain steps a coinbase output must age before it can be spent.
+    pub coinbase_maturity: u32,
+}
+
+static NO_VERIFICATION: NoVerification = NoVerification;
+
+impl ApplyRules<'static> {
+    /// No proof checks and no coinbase maturity. For tests and proof-less devnets only.
+    pub fn unchecked() -> Self {
+        Self {
+            verifier: &NO_VERIFICATION,
+            coinbase_maturity: 0,
+        }
+    }
 }
 
 fn hex_32(bytes: &[u8; 32]) -> String {
@@ -152,12 +190,27 @@ impl RamUtxoStore {
         self.nullifiers.contains_key(nullifier)
     }
 
-    /// Checks a batch against the current state without changing it.
+    /// Checks a batch against the current state without changing it, with no proof checks and no
+    /// coinbase maturity.
     ///
     /// Transactions are processed in order, so a later transaction may spend an output created
     /// by an earlier one in the same batch.
     pub fn validate_batch(&self, txs: &[Arc<dyn BatchableTx>]) -> Result<(), StateError> {
-        self.plan(txs, Height(0)).map(|_| ())
+        self.plan(txs, Height(0), &ApplyRules::unchecked())
+            .map(|_| ())
+    }
+
+    /// Checks a batch against the current state without changing it, under the given rules.
+    ///
+    /// Unlike [`RamUtxoStore::validate_batch`] this checks coinbase maturity against `height` and
+    /// runs the rules' proof verifier. The mempool uses it to admit transactions.
+    pub fn validate_batch_with(
+        &self,
+        txs: &[Arc<dyn BatchableTx>],
+        height: Height,
+        rules: &ApplyRules<'_>,
+    ) -> Result<(), StateError> {
+        self.plan(txs, height, rules).map(|_| ())
     }
 
     /// Validates `txs` and applies them, returning their undo step.
@@ -165,19 +218,21 @@ impl RamUtxoStore {
         &self,
         txs: &[Arc<dyn BatchableTx>],
         height: Height,
+        rules: &ApplyRules<'_>,
     ) -> Result<StepUndo, StateError> {
-        let plan = self.plan(txs, height)?;
+        let plan = self.plan(txs, height, rules)?;
         Ok(self.commit(plan))
     }
 
-    /// Validates and applies one batch, returning its undo data.
+    /// Validates and applies one batch with no proof checks and no coinbase maturity, returning
+    /// its undo data. Consensus uses [`RamUtxoStore::apply_block`] instead.
     pub fn apply_batch(
         &self,
         txs: &[Arc<dyn BatchableTx>],
         height: Height,
     ) -> Result<BlockUndo, StateError> {
         Ok(BlockUndo {
-            steps: vec![self.apply_checked(txs, height)?],
+            steps: vec![self.apply_checked(txs, height, &ApplyRules::unchecked())?],
         })
     }
 
@@ -190,6 +245,7 @@ impl RamUtxoStore {
         coinbase_outputs: Vec<(OutPoint, Output)>,
         batches: &[Vec<Arc<dyn BatchableTx>>],
         height: Height,
+        rules: &ApplyRules<'_>,
     ) -> Result<BlockUndo, StateError> {
         let mut undo = BlockUndo::default();
 
@@ -205,7 +261,7 @@ impl RamUtxoStore {
         undo.steps.push(coinbase_step);
 
         for batch in batches {
-            match self.apply_checked(batch, height) {
+            match self.apply_checked(batch, height, rules) {
                 Ok(step) => undo.steps.push(step),
                 Err(e) => {
                     self.revert_block(undo);
@@ -234,12 +290,20 @@ impl RamUtxoStore {
     }
 
     /// Computes the effect of `txs` without changing the store.
-    fn plan(&self, txs: &[Arc<dyn BatchableTx>], height: Height) -> Result<Plan, StateError> {
+    fn plan(
+        &self,
+        txs: &[Arc<dyn BatchableTx>],
+        height: Height,
+        rules: &ApplyRules<'_>,
+    ) -> Result<Plan, StateError> {
         let mut plan = Plan::default();
+        // The outputs each transaction spends, kept for proof verification.
+        let mut spent_outputs: Vec<Vec<Output>> = Vec::with_capacity(txs.len());
 
         for tx in txs {
             let txid = transaction::Hash(tx.txid().0);
             let mut inputs: i128 = 0;
+            let mut tx_spent = Vec::new();
 
             for outpoint in tx.spent_outpoints() {
                 let utxo = if let Some(utxo) = plan.created.remove(&outpoint) {
@@ -252,13 +316,23 @@ impl RamUtxoStore {
                             let utxo = self
                                 .get(&outpoint)
                                 .ok_or(StateError::MissingInput(outpoint))?;
+                            let age = height.0.saturating_sub(utxo.height.0);
+                            if utxo.from_coinbase && age < rules.coinbase_maturity {
+                                return Err(StateError::ImmatureCoinbase {
+                                    outpoint,
+                                    age,
+                                    required: rules.coinbase_maturity,
+                                });
+                            }
                             slot.insert(utxo.clone());
                             utxo
                         }
                     }
                 };
                 inputs += i128::from(utxo.output.value().zatoshis());
+                tx_spent.push(utxo.output);
             }
+            spent_outputs.push(tx_spent);
             inputs += i128::from(tx.shielded_value_out().zatoshis());
 
             let mut outputs: i128 = 0;
@@ -289,6 +363,18 @@ impl RamUtxoStore {
                 }
             }
         }
+
+        // Proofs and signatures are checked last: they are the expensive part, so a batch that
+        // fails a cheap state check never pays for them.
+        let items: Vec<TxVerifyItem<'_>> = txs
+            .iter()
+            .zip(spent_outputs)
+            .map(|(tx, spent_outputs)| TxVerifyItem {
+                tx: tx.as_ref(),
+                spent_outputs,
+            })
+            .collect();
+        rules.verifier.verify_batch(&items)?;
 
         Ok(plan)
     }
@@ -461,6 +547,7 @@ mod tests {
                 )],
                 &[vec![arc(first)], vec![arc(second), arc(shielded)]],
                 Height(2),
+                &ApplyRules::unchecked(),
             )
             .unwrap();
         assert_eq!(store.len(), 2);
@@ -480,9 +567,134 @@ mod tests {
         let good = DevTx::new(vec![funded], vec![out(90_000)], vec![], false, 1);
         let bad = DevTx::new(vec![funded], vec![out(90_000)], vec![], false, 2); // double spend across batches
 
-        let result = store.apply_block(vec![], &[vec![arc(good)], vec![arc(bad)]], Height(2));
+        let result = store.apply_block(
+            vec![],
+            &[vec![arc(good)], vec![arc(bad)]],
+            Height(2),
+            &ApplyRules::unchecked(),
+        );
         assert!(matches!(result, Err(StateError::MissingInput(_))));
         assert_eq!(store.len(), 1);
         assert!(store.contains(&funded));
+    }
+
+    #[test]
+    fn coinbase_outputs_must_mature() {
+        let store = RamUtxoStore::new();
+        // `fund` creates a coinbase output at height 1.
+        let funded = fund(&store, 1, 100_000);
+        let spend = || {
+            arc(DevTx::new(
+                vec![funded],
+                vec![out(90_000)],
+                vec![],
+                false,
+                1,
+            ))
+        };
+        let rules = ApplyRules {
+            coinbase_maturity: 100,
+            ..ApplyRules::unchecked()
+        };
+
+        // 50 steps old: still immature.
+        let early = store.apply_block(vec![], &[vec![spend()]], Height(51), &rules);
+        assert_eq!(
+            early.err(),
+            Some(StateError::ImmatureCoinbase {
+                outpoint: funded,
+                age: 50,
+                required: 100
+            })
+        );
+        assert!(store.contains(&funded), "a rejected block changes nothing");
+
+        // Exactly 100 steps old: mature.
+        store
+            .apply_block(vec![], &[vec![spend()]], Height(101), &rules)
+            .unwrap();
+        assert!(!store.contains(&funded));
+    }
+
+    #[derive(Debug)]
+    struct RejectNonce(u64);
+
+    impl TxVerifier for RejectNonce {
+        fn verify_batch(&self, items: &[TxVerifyItem<'_>]) -> Result<(), VerifyError> {
+            for item in items {
+                if item
+                    .tx
+                    .to_bytes()
+                    .windows(8)
+                    .any(|w| w == self.0.to_le_bytes())
+                {
+                    return Err(VerifyError {
+                        txid: item.tx.txid(),
+                        reason: "bad proof".into(),
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_verifier_sees_spent_outputs_and_can_reject_a_block() {
+        let store = RamUtxoStore::new();
+        let funded = fund(&store, 1, 100_000);
+        let tx = arc(DevTx::new(
+            vec![funded],
+            vec![out(90_000)],
+            vec![],
+            false,
+            0xdead_beef,
+        ));
+
+        let bad = RejectNonce(0xdead_beef);
+        let rules = ApplyRules {
+            verifier: &bad,
+            coinbase_maturity: 0,
+        };
+        let result = store.apply_block(vec![], &[vec![tx.clone()]], Height(2), &rules);
+        assert!(matches!(result, Err(StateError::Verification(_))));
+        assert!(
+            store.contains(&funded),
+            "verification failure leaves state unchanged"
+        );
+
+        // The same transaction passes a verifier that accepts it.
+        let ok = RejectNonce(1);
+        let rules = ApplyRules {
+            verifier: &ok,
+            coinbase_maturity: 0,
+        };
+        store
+            .apply_block(vec![], &[vec![tx]], Height(2), &rules)
+            .unwrap();
+    }
+
+    #[test]
+    fn proofs_are_not_checked_when_a_cheap_state_check_fails() {
+        // A missing input must be reported without ever invoking the (expensive) verifier.
+        #[derive(Debug)]
+        struct Panics;
+        impl TxVerifier for Panics {
+            fn verify_batch(&self, _: &[TxVerifyItem<'_>]) -> Result<(), VerifyError> {
+                panic!("the verifier must not run for a batch that fails state checks");
+            }
+        }
+
+        let store = RamUtxoStore::new();
+        let ghost = OutPoint {
+            hash: transaction::Hash([9; 32]),
+            index: 0,
+        };
+        let tx = arc(DevTx::new(vec![ghost], vec![], vec![], false, 1));
+        let rules = ApplyRules {
+            verifier: &Panics,
+            coinbase_maturity: 0,
+        };
+        let result = store.apply_block(vec![], &[vec![tx]], Height(2), &rules);
+        assert_eq!(result.err(), Some(StateError::MissingInput(ghost)));
     }
 }

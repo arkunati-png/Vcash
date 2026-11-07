@@ -7,10 +7,10 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use tracing::info;
-use volt_consensus::Consensus;
+use volt_consensus::{Consensus, ConsensusConfig};
 use volt_core::{
     constants::{BATCH_SIZE, MAX_BLOCK_PARENTS, TARGET_BLOCK_INTERVAL_MS},
-    DevTxDecoder, VoltBlock,
+    DevTxDecoder, Economics, VoltBlock,
 };
 use volt_crypto::{Blake2bPowHasher, PowHasher};
 use volt_network::{GossipHub, GossipPeer, VoltMessage};
@@ -19,7 +19,7 @@ use zebra_chain::{
     amount::Amount, amount::NonNegative, parameters::NetworkKind, transparent::Address,
 };
 
-use crate::wallet::DevWallet;
+use crate::wallet::{DevWallet, Spendability};
 
 /// Which proof-of-work function the miners use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +54,10 @@ pub struct SimConfig {
     pub batches_per_block: usize,
     /// The proof-of-work function.
     pub pow: PowKind,
+    /// The monetary policy.
+    pub economics: Economics,
+    /// How many chain steps a coinbase output must age before it can be spent.
+    pub coinbase_maturity: u32,
 }
 
 impl Default for SimConfig {
@@ -63,6 +67,8 @@ impl Default for SimConfig {
             miners: 3,
             batches_per_block: 2,
             pow: PowKind::Blake2b,
+            economics: Economics::mainnet(),
+            coinbase_maturity: 20,
         }
     }
 }
@@ -139,10 +145,14 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
     let genesis = Consensus::genesis_block(0);
     let mut nodes = Vec::new();
     for id in 0..config.miners {
+        let consensus_config = ConsensusConfig::devnet()
+            .with_economics(config.economics)
+            .with_coinbase_maturity(config.coinbase_maturity);
         let consensus = Consensus::new(
             genesis.clone(),
             config.pow.hasher()?,
             Arc::new(DevTxDecoder),
+            consensus_config,
         )
         .context("genesis block was rejected")?;
         nodes.push(SimNode {
@@ -183,8 +193,24 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
             let ctx = node.consensus.template_context();
             let batches = if index == 0 {
                 let wanted = config.batches_per_block * BATCH_SIZE;
-                let txs =
-                    wallet.make_txs(wanted, |outpoint| node.consensus.utxos().contains(outpoint));
+                let txs = {
+                    // Spendable now means unspent in state and, for a coinbase output, already
+                    // mature at the current height (it will be applied at a later one).
+                    let height = u32::try_from(node.consensus.state_height()).unwrap_or(u32::MAX);
+                    let maturity = config.coinbase_maturity;
+                    wallet.make_txs(wanted, |outpoint| {
+                        match node.consensus.utxos().get(outpoint) {
+                            None => Spendability::Never,
+                            Some(utxo)
+                                if utxo.from_coinbase
+                                    && height.saturating_sub(utxo.height.0) < maturity =>
+                            {
+                                Spendability::Later
+                            }
+                            Some(_) => Spendability::Now,
+                        }
+                    })
+                };
                 Consensus::pack_batches(&txs)?.0
             } else {
                 Vec::new()
@@ -273,7 +299,7 @@ fn track(
             total_reward = settlement.total_reward.zatoshis(),
             to_miners = settlement.miner_amount.zatoshis(),
             locked_in_pol = settlement.pol_amount.zatoshis(),
-            "epoch final: exact 50/50 split, POL half permanently locked"
+            "epoch final: scheduled miner/POL split, POL part permanently locked"
         );
         report.settlements.push(*settlement);
     }

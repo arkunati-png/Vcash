@@ -1,7 +1,7 @@
 [package]
 name = "volt-network"
 version = "0.1.0"
-description = "Voltcash wire messages and an in-process gossip hub"
+description = "Voltcash networking: wire messages, framing, an in-process hub and a TCP peer-to-peer runtime"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -11,12 +11,16 @@ publish = false
 [dependencies]
 volt-core = { path = "../volt-core" }
 
+blake2b_simd = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "net", "io-util", "time", "rt", "macros"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+zebra-chain = { path = "../zebra-chain" }
+tokio = { workspace = true, features = ["sync", "net", "io-util", "time", "rt", "rt-multi-thread", "macros", "test-util"] }
 
 [lints]
 workspace = true

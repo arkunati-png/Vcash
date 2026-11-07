@@ -16,5 +16,6 @@
 //! 5. `submit_block` validates, colors the block with GHOSTDAG (`k = 32`), moves the UTXO state
 //!    along the selected chain and settles each 200-block epoch into the POL reserve.
 
+pub mod node;
 pub mod sim;
 pub mod wallet;

@@ -4,8 +4,9 @@
 //! rollup, fee and state logic only needs the small [`BatchableTx`] view, so it can also
 //! be driven by the light [`DevTx`](crate::DevTx) format on a devnet.
 
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
+use thiserror::Error;
 use zebra_chain::{
     amount::{Amount, NegativeAllowed},
     serialization::{ZcashDeserializeInto, ZcashSerialize},
@@ -53,12 +54,66 @@ pub trait BatchableTx: Send + Sync + std::fmt::Debug {
 
     /// The canonical serialization.
     fn to_bytes(&self) -> Vec<u8>;
+
+    /// The number of logical actions: the unit proof-verification work and fees scale with.
+    ///
+    /// Following ZIP 317, transparent inputs and outputs count as `max(inputs, outputs)`,
+    /// Sapling as `max(spends, outputs)`, plus every Orchard action and two per Sprout JoinSplit.
+    fn logical_actions(&self) -> u64;
+
+    /// The serialized size in bytes.
+    fn size_bytes(&self) -> usize {
+        self.to_bytes().len()
+    }
+
+    /// Returns `self` as [`Any`], so a [`TxVerifier`] can recover the concrete transaction type.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Decodes transactions from batch payloads.
 pub trait TxDecoder: Send + Sync {
     /// Decodes one transaction from exactly `bytes`.
     fn decode(&self, bytes: &[u8]) -> Result<Arc<dyn BatchableTx>, CodecError>;
+}
+
+/// A transaction together with the outputs it spends, in input order.
+#[derive(Debug)]
+pub struct TxVerifyItem<'a> {
+    /// The transaction to verify.
+    pub tx: &'a dyn BatchableTx,
+    /// The outputs spent by `tx`'s transparent inputs, in input order.
+    pub spent_outputs: Vec<Output>,
+}
+
+/// Why a transaction failed cryptographic verification.
+#[derive(Debug, Error, PartialEq, Eq, Clone)]
+#[error("transaction {txid} failed verification: {reason}")]
+pub struct VerifyError {
+    /// The offending transaction.
+    pub txid: VoltHash,
+    /// What failed.
+    pub reason: String,
+}
+
+/// Verifies the proofs and signatures of transactions.
+///
+/// It runs when a block is *accepted into state*, because transparent signature hashes commit to
+/// the spent outputs, and those are only known once the block's place in the consensus order is.
+/// Implementations should cache successes: a block's transactions are verified again if a
+/// reorg re-applies it.
+pub trait TxVerifier: Send + Sync + std::fmt::Debug {
+    /// Verifies every item, returning the first failure.
+    fn verify_batch(&self, items: &[TxVerifyItem<'_>]) -> Result<(), VerifyError>;
+}
+
+/// A [`TxVerifier`] that accepts everything. For devnets using proof-less transactions only.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoVerification;
+
+impl TxVerifier for NoVerification {
+    fn verify_batch(&self, _items: &[TxVerifyItem<'_>]) -> Result<(), VerifyError> {
+        Ok(())
+    }
 }
 
 /// A [`TxDecoder`] for Zcash-format transactions.
@@ -119,5 +174,19 @@ impl BatchableTx for Transaction {
     fn to_bytes(&self) -> Vec<u8> {
         self.zcash_serialize_to_vec()
             .expect("serializing a transaction into a Vec cannot fail")
+    }
+
+    fn logical_actions(&self) -> u64 {
+        let transparent = self.inputs().len().max(self.outputs().len()) as u64; // lossless: usize fits in u64
+        let sapling = self
+            .sapling_spends_count()
+            .max(self.sapling_outputs().count()) as u64; // lossless: usize fits in u64
+        let orchard = self.orchard_actions().count() as u64; // lossless: usize fits in u64
+        let sprout = 2 * self.joinsplit_count() as u64; // lossless: usize fits in u64
+        transparent + sapling + orchard + sprout
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

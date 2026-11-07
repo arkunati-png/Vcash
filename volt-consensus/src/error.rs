@@ -97,6 +97,24 @@ pub enum ConsensusError {
     #[error("block has {0} batches")]
     TooManyBatches(usize),
 
+    /// The block carries more transaction bytes than allowed.
+    #[error("block carries {bytes} transaction bytes, the maximum is {max}")]
+    BlockTooLarge {
+        /// The total serialized transaction size.
+        bytes: usize,
+        /// The maximum.
+        max: usize,
+    },
+
+    /// The block carries more logical actions than allowed.
+    #[error("block carries {actions} actions, the maximum is {max}")]
+    TooManyActions {
+        /// The total logical actions.
+        actions: u64,
+        /// The maximum.
+        max: u64,
+    },
+
     /// A fee sum is out of range.
     #[error("fee total out of range")]
     FeeOverflow,

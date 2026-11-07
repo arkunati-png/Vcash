@@ -6465,6 +6465,7 @@ dependencies = [
 name = "volt-consensus"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "thiserror 2.0.18",
  "tracing",
  "volt-core",
@@ -6480,6 +6481,7 @@ dependencies = [
  "blake2b_simd",
  "flate2",
  "hex",
+ "proptest",
  "thiserror 2.0.18",
  "zebra-chain",
 ]
@@ -6499,10 +6501,14 @@ dependencies = [
 name = "volt-network"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
+ "parking_lot",
+ "rand 0.10.2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "volt-core",
+ "zebra-chain",
 ]
 
 [[package]]
@@ -6510,6 +6516,9 @@ name = "volt-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "parking_lot",
+ "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "volt-consensus",
@@ -6517,6 +6526,8 @@ dependencies = [
  "volt-crypto",
  "volt-network",
  "volt-state",
+ "volt-storage",
+ "volt-verify",
  "zebra-chain",
 ]
 
@@ -6528,6 +6539,37 @@ dependencies = [
  "thiserror 2.0.18",
  "volt-core",
  "zebra-chain",
+]
+
+[[package]]
+name = "volt-storage"
+version = "0.1.0"
+dependencies = [
+ "blake2b_simd",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "volt-consensus",
+ "volt-core",
+ "volt-crypto",
+ "zebra-chain",
+]
+
+[[package]]
+name = "volt-verify"
+version = "0.1.0"
+dependencies = [
+ "orchard",
+ "parking_lot",
+ "rand 0.10.2",
+ "rayon",
+ "sapling-crypto",
+ "tracing",
+ "volt-core",
+ "zcash_proofs",
+ "zebra-chain",
+ "zebra-script",
+ "zebra-test",
 ]
 
 [[package]]

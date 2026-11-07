@@ -12,6 +12,7 @@ fn parallel_miners_converge_and_settle_epochs() {
         miners: 3,
         batches_per_block: 2,
         pow: PowKind::Blake2b,
+        ..SimConfig::default()
     })
     .unwrap();
 
@@ -33,12 +34,17 @@ fn parallel_miners_converge_and_settle_epochs() {
         "shielded transactions reveal nullifiers"
     );
 
-    // Thermodynamic POL: every settled epoch is an exact 50/50 split of its total reward.
+    // Thermodynamic POL: every settled epoch follows the schedule. At the start of the production
+    // schedule that is 70% to miners and 30% locked as protocol-owned liquidity.
     assert!(!report.settlements.is_empty());
     for (i, s) in report.settlements.iter().enumerate() {
         assert_eq!(s.epoch, i as u64);
         assert_eq!(s.blocks, 200);
-        assert_eq!(s.miner_amount, s.pol_amount, "exact 50/50");
+        assert_eq!(
+            s.miner_amount.zatoshis() * 10,
+            s.total_reward.zatoshis() * 7,
+            "70% of the epoch reward goes to miners"
+        );
         assert_eq!(
             s.miner_amount.zatoshis() + s.pol_amount.zatoshis(),
             s.total_reward.zatoshis()
@@ -59,6 +65,7 @@ fn a_single_miner_works_and_bad_configs_are_rejected() {
         miners: 1,
         batches_per_block: 1,
         pow: PowKind::Blake2b,
+        ..SimConfig::default()
     })
     .unwrap();
     assert!(report.converged);
@@ -70,6 +77,7 @@ fn a_single_miner_works_and_bad_configs_are_rejected() {
             miners,
             batches_per_block: 1,
             pow: PowKind::Blake2b,
+            ..SimConfig::default()
         })
     };
     assert!(bad(0).is_err());
@@ -85,6 +93,7 @@ fn the_widest_dag_merges_32_parallel_blocks_without_reds() {
         miners: 32,
         batches_per_block: 0,
         pow: PowKind::Blake2b,
+        ..SimConfig::default()
     })
     .unwrap();
     assert!(report.converged);

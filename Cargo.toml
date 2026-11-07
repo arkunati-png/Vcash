@@ -19,6 +19,8 @@ members = [
         "volt-consensus",
         "volt-network",
         "volt-node",
+        "volt-verify",
+        "volt-storage",
 ]
 
 # Keep fuzz-only features out of ordinary node builds. CI selects the full
@@ -44,6 +46,8 @@ default-members = [
         "volt-consensus",
         "volt-network",
         "volt-node",
+        "volt-verify",
+        "volt-storage",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates

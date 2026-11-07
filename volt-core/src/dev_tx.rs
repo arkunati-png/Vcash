@@ -135,6 +135,15 @@ impl BatchableTx for DevTx {
         Amount::try_from(self.shielded_out).unwrap_or_else(|_| Amount::zero())
     }
 
+    fn logical_actions(&self) -> u64 {
+        let transparent = self.inputs.len().max(self.outputs.len()) as u64; // lossless: usize fits in u64
+        transparent + self.nullifiers.len() as u64 // lossless: usize fits in u64
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn to_bytes(&self) -> Vec<u8> {
         let mut w = Writer::new();
         w.u8(u8::from(self.shielded))

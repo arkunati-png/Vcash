@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use volt_consensus::{
-    coinbase::CoinbaseError, difficulty, Consensus, ConsensusError, TemplateContext,
+    coinbase::CoinbaseError, difficulty, Consensus, ConsensusConfig, ConsensusError,
+    TemplateContext,
 };
 use volt_core::{
-    constants::{BASE_EMISSION_PER_BLOCK, EPOCH_LENGTH, FINALITY_DEPTH},
-    BatchableTx, DevTx, DevTxDecoder, Payout, RollupBatch, VoltBlock, VoltHash,
+    constants::{EPOCH_LENGTH, FINALITY_DEPTH},
+    BatchableTx, DevTx, DevTxDecoder, Economics, Payout, RollupBatch, VoltBlock, VoltHash,
 };
 use volt_crypto::{meets_target, Blake2bPowHasher, PowHasher};
 use zebra_chain::{
@@ -17,13 +18,21 @@ use zebra_chain::{
     transparent::{Address, OutPoint, Output, Script},
 };
 
+/// The flat emission used by the fifty-fifty test economics, in zatoshis.
+const BASE_EMISSION_PER_BLOCK: i64 = 5_000_000;
 const HALF_EMISSION: i64 = BASE_EMISSION_PER_BLOCK / 2;
 
+/// A devnet engine with an exact 50/50 split from block one and no coinbase maturity.
 fn new_consensus() -> Consensus {
+    new_consensus_with(ConsensusConfig::devnet().with_economics(Economics::fifty_fifty()))
+}
+
+fn new_consensus_with(config: ConsensusConfig) -> Consensus {
     Consensus::new(
         Consensus::genesis_block(0),
         Arc::new(Blake2bPowHasher),
         Arc::new(DevTxDecoder),
+        config,
     )
     .unwrap()
 }
@@ -46,6 +55,7 @@ fn ctx_on(c: &Consensus, parents: &[VoltHash]) -> TemplateContext {
             .map(|p| c.dag().get(p).unwrap().timestamp_ms)
             .max()
             .unwrap(),
+        reward_score: c.dag().get(&selected).unwrap().ghostdag.blue_score,
     }
 }
 
@@ -438,4 +448,116 @@ fn rejects_wrong_difficulty_and_tampered_commitments() {
         c.submit_block(future, 1_000),
         Err(ConsensusError::TimestampInFuture { .. })
     ));
+}
+
+#[test]
+fn the_engine_enforces_the_tapered_miner_share() {
+    // Production economics: miners get 70% at the start, the rest is locked as POL.
+    let mut c = new_consensus_with(ConsensusConfig::devnet());
+    let ctx = c.template_context();
+    let block = mine_on(&c, &ctx, vec![], &miners(5, 1), 500);
+
+    let paid: i64 = block
+        .coinbase
+        .payouts
+        .iter()
+        .map(|p| p.amount.zatoshis())
+        .sum();
+    assert_eq!(paid, BASE_EMISSION_PER_BLOCK * 7 / 10);
+    assert_eq!(
+        block.coinbase.pol_contribution.zatoshis(),
+        BASE_EMISSION_PER_BLOCK * 3 / 10
+    );
+    c.submit_block(block, 1_000).unwrap();
+
+    // A miner who keeps 50/50 accounting under a 70/30 schedule (paying itself too little, or
+    // POL too much) is off schedule and rejected.
+    let ctx = c.template_context();
+    let mut wrong = c
+        .build_template(&ctx, vec![], &miners(5, 1), 1_000)
+        .unwrap();
+    let shift = wrong.coinbase.payouts[0].amount.zatoshis() / 4;
+    wrong.coinbase.payouts[0].amount =
+        Amount::new(wrong.coinbase.payouts[0].amount.zatoshis() - shift);
+    wrong.coinbase.pol_contribution =
+        Amount::new(wrong.coinbase.pol_contribution.zatoshis() + shift);
+    wrong.header.coinbase_root = wrong.coinbase.hash();
+    let wrong = c.mine(wrong, &ctx.seed, 0, u64::MAX).unwrap().unwrap();
+    assert!(matches!(
+        c.submit_block(wrong, 2_000),
+        Err(ConsensusError::Coinbase(
+            CoinbaseError::WrongMinerTotal { .. }
+        ))
+    ));
+}
+
+#[test]
+fn the_engine_rejects_dust_payouts() {
+    let mut c = new_consensus();
+    let ctx = c.template_context();
+    let mut block = c.build_template(&ctx, vec![], &miners(2, 1), 500).unwrap();
+
+    // Split the first payout so a new address receives 5_000, below the 10_000 minimum.
+    block.coinbase.payouts[0].amount =
+        Amount::new(block.coinbase.payouts[0].amount.zatoshis() - 5_000);
+    block.coinbase.payouts.push(Payout {
+        address: Address::from_pub_key_hash(NetworkKind::Regtest, [0xdd; 20]),
+        amount: Amount::new(5_000),
+    });
+    block.header.coinbase_root = block.coinbase.hash();
+    let block = c.mine(block, &ctx.seed, 0, u64::MAX).unwrap().unwrap();
+
+    assert!(matches!(
+        c.submit_block(block, 1_000),
+        Err(ConsensusError::Coinbase(CoinbaseError::DustPayout {
+            amount: 5_000,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn coinbase_outputs_cannot_be_spent_until_they_mature() {
+    // Maturity 10: b1's outputs are created at chain height 2, so they may be spent from height 12.
+    let mut c = new_consensus_with(
+        ConsensusConfig::devnet()
+            .with_economics(Economics::fifty_fifty())
+            .with_coinbase_maturity(10),
+    );
+    let m = miners(10, 1);
+    let mut ts = 0;
+    let b1 = extend(&mut c, &mut ts, &m);
+    extend(&mut c, &mut ts, &m);
+    extend(&mut c, &mut ts, &m);
+
+    // A block that spends b1's coinbase now: it is valid in the DAG but not accepted.
+    let txs = spend_all(&b1, 0);
+    let (batches, _) = Consensus::pack_batches(&txs).unwrap();
+    let ctx = c.template_context();
+    ts += 500;
+    let early = mine_on(&c, &ctx, batches, &m, ts);
+    c.submit_block(early, ts).unwrap();
+    let merged = extend(&mut c, &mut ts, &m);
+    let outcome_ok = c.utxos().contains(&out0(&txs[0]));
+    assert!(
+        !outcome_ok,
+        "the immature spend was not accepted ({})",
+        merged.hash()
+    );
+
+    // Mine past the maturity, then the same spend (fresh nonces) is accepted.
+    for _ in 0..10 {
+        extend(&mut c, &mut ts, &m);
+    }
+    let txs = spend_all(&b1, 10_000);
+    let (batches, _) = Consensus::pack_batches(&txs).unwrap();
+    let ctx = c.template_context();
+    ts += 500;
+    let late = mine_on(&c, &ctx, batches, &m, ts);
+    c.submit_block(late, ts).unwrap();
+    extend(&mut c, &mut ts, &m);
+    assert!(
+        c.utxos().contains(&out0(&txs[0])),
+        "the mature spend was accepted"
+    );
 }

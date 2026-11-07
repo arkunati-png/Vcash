@@ -4,8 +4,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use tracing::{debug, warn};
 use volt_core::{
-    constants::POW_LIMIT_BITS, BatchableTx, Coinbase, RollupBatch, TxDecoder, VoltBlock, VoltHash,
-    VoltHeader,
+    constants::{COINBASE_MATURITY, POW_LIMIT_BITS},
+    BatchableTx, Coinbase, Economics, NoVerification, RollupBatch, TxDecoder, TxVerifier,
+    VoltBlock, VoltHash, VoltHeader,
 };
 use volt_crypto::{meets_target, PowHasher};
 use volt_state::{PolReserve, RamUtxoStore};
@@ -44,6 +45,51 @@ pub struct SubmitOutcome {
     pub chain_blocked_by_finality: bool,
 }
 
+/// Settings for a [`Consensus`] engine.
+#[derive(Clone, Debug)]
+pub struct ConsensusConfig {
+    /// The emission schedule and miner / POL split.
+    pub economics: Economics,
+    /// Verifies transaction proofs and signatures when a block is accepted into state.
+    pub verifier: Arc<dyn TxVerifier>,
+    /// How many chain steps a coinbase output must age before it can be spent.
+    pub coinbase_maturity: u32,
+}
+
+impl ConsensusConfig {
+    /// A configuration for real transactions: the caller supplies the proof verifier, and the
+    /// production schedule and coinbase maturity apply.
+    pub fn new(verifier: Arc<dyn TxVerifier>) -> Self {
+        Self {
+            economics: Economics::mainnet(),
+            verifier,
+            coinbase_maturity: COINBASE_MATURITY,
+        }
+    }
+
+    /// A configuration for proof-less devnet transactions: **no proof or signature checking** and
+    /// no coinbase maturity. Never use it with real value.
+    pub fn devnet() -> Self {
+        Self {
+            economics: Economics::mainnet(),
+            verifier: Arc::new(NoVerification),
+            coinbase_maturity: 0,
+        }
+    }
+
+    /// Replaces the monetary policy.
+    pub fn with_economics(mut self, economics: Economics) -> Self {
+        self.economics = economics;
+        self
+    }
+
+    /// Replaces the coinbase maturity.
+    pub fn with_coinbase_maturity(mut self, steps: u32) -> Self {
+        self.coinbase_maturity = steps;
+        self
+    }
+}
+
 /// What a miner needs to build the next block.
 #[derive(Clone, Debug)]
 pub struct TemplateContext {
@@ -55,6 +101,8 @@ pub struct TemplateContext {
     pub seed: [u8; 32],
     /// The earliest allowed timestamp, in milliseconds.
     pub min_timestamp_ms: u64,
+    /// The score the reward schedule is evaluated at: the selected parent's blue score.
+    pub reward_score: u64,
 }
 
 /// The Voltcash consensus engine.
@@ -94,8 +142,9 @@ impl Consensus {
         genesis: VoltBlock,
         pow: Arc<dyn PowHasher>,
         decoder: Arc<dyn TxDecoder>,
+        config: ConsensusConfig,
     ) -> Result<Self, ConsensusError> {
-        let validator = BlockValidator::new(pow, decoder);
+        let validator = BlockValidator::new(pow, decoder, config.economics);
         let stored = validator.validate_genesis(genesis)?;
         let hash = stored.block.hash();
 
@@ -112,7 +161,12 @@ impl Consensus {
         Ok(Self {
             dag,
             bodies,
-            chain: ChainState::new(hash),
+            chain: ChainState::new(
+                hash,
+                config.economics,
+                config.verifier,
+                config.coinbase_maturity,
+            ),
             validator,
         })
     }
@@ -140,6 +194,17 @@ impl Consensus {
     /// The number of blocks accepted into state.
     pub fn accepted_blocks(&self) -> u64 {
         self.chain.accepted_blocks()
+    }
+
+    /// The blue score of the chain block the UTXO state is currently at.
+    ///
+    /// Coinbase maturity is measured against this height.
+    pub fn state_height(&self) -> u64 {
+        self.dag
+            .get(&self.chain.tip())
+            .expect("the chain tip is in the DAG")
+            .ghostdag
+            .blue_score
     }
 
     /// The block with the given hash, if known.
@@ -217,6 +282,12 @@ impl Consensus {
         TemplateContext {
             bits: next_bits(&self.dag, &selected_parent),
             seed: pow_seed(&self.dag, &selected_parent),
+            reward_score: self
+                .dag
+                .get(&selected_parent)
+                .expect("the selected parent is in the DAG")
+                .ghostdag
+                .blue_score,
             parents,
             min_timestamp_ms,
         }
@@ -254,7 +325,13 @@ impl Consensus {
         // Distinct extra data keeps coinbase outpoints unique between competing blocks.
         let mut extra = timestamp_ms.to_le_bytes().to_vec();
         extra.extend_from_slice(&ctx.parents[0].0[..8]);
-        let coinbase = build_coinbase(fees, miners, extra)?;
+        let coinbase = build_coinbase(
+            fees,
+            miners,
+            extra,
+            self.validator.economics(),
+            ctx.reward_score,
+        )?;
 
         Ok(VoltBlock {
             header: VoltHeader {

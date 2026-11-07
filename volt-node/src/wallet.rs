@@ -15,6 +15,17 @@ use zebra_chain::{
     transparent::{OutPoint, Output, Script},
 };
 
+/// Whether an output can be spent right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spendability {
+    /// Unspent and mature: spend it.
+    Now,
+    /// Unspent but not yet mature: keep it and look again later.
+    Later,
+    /// Spent or reverted: forget it.
+    Never,
+}
+
 /// Spends accepted outputs, alternating transparent and shielded transactions.
 ///
 /// Every third transaction is shielded (it pays the higher fee and reveals a nullifier).
@@ -63,22 +74,34 @@ impl DevWallet {
 
     /// Builds up to `count` transactions, fewer if the wallet runs out of outputs.
     ///
-    /// `is_unspent` reports whether an outpoint is currently unspent in the node's state, so
-    /// outputs lost to a reorg are dropped instead of spent.
+    /// `spendability` reports whether an outpoint can be spent in the node's state right now:
+    /// outputs lost to a reorg are dropped, and immature coinbase outputs wait their turn.
     pub fn make_txs(
         &mut self,
         count: usize,
-        is_unspent: impl Fn(&OutPoint) -> bool,
+        spendability: impl Fn(&OutPoint) -> Spendability,
     ) -> Vec<Arc<dyn BatchableTx>> {
         let mut txs: Vec<Arc<dyn BatchableTx>> = Vec::with_capacity(count);
-        while txs.len() < count {
+        // Look at each queued output at most once per call, so deferred ones cannot loop forever.
+        let mut deferred = Vec::new();
+        for _ in 0..self.spendable.len() {
+            if txs.len() >= count {
+                break;
+            }
             let Some((outpoint, value)) = self.spendable.pop_front() else {
                 break;
             };
-            if !is_unspent(&outpoint) {
-                // Reverted or already spent: forget it so a later re-acceptance can re-add it.
-                self.known.remove(&outpoint);
-                continue;
+            match spendability(&outpoint) {
+                Spendability::Now => {}
+                Spendability::Later => {
+                    deferred.push((outpoint, value));
+                    continue;
+                }
+                Spendability::Never => {
+                    // Reverted or already spent: forget it so a later re-acceptance can re-add it.
+                    self.known.remove(&outpoint);
+                    continue;
+                }
             }
 
             self.nonce += 1;
@@ -108,6 +131,10 @@ impl DevWallet {
                 shielded,
                 self.nonce,
             )));
+        }
+        // Deferred outputs go back to the front, in their original order.
+        for item in deferred.into_iter().rev() {
+            self.spendable.push_front(item);
         }
         txs
     }

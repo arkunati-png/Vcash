@@ -25,6 +25,8 @@ use volt_core::{
     VoltHash,
 };
 
+use crate::reachability::Reachability;
+
 /// Errors from inserting a block into the DAG.
 #[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum GhostdagError {
@@ -105,6 +107,7 @@ pub struct BlockNode {
 #[derive(Debug)]
 pub struct BlockDag {
     k: usize,
+    reach: Reachability,
     nodes: HashMap<VoltHash, BlockNode>,
     tips: BTreeSet<VoltHash>,
     genesis: Option<VoltHash>,
@@ -121,6 +124,7 @@ impl BlockDag {
     pub fn new(k: usize) -> Self {
         Self {
             k,
+            reach: Reachability::new(),
             nodes: HashMap::new(),
             tips: BTreeSet::new(),
             genesis: None,
@@ -187,13 +191,29 @@ impl BlockDag {
                 ghostdag: GhostdagData::default(),
             },
         );
+        self.reach.add_genesis(hash);
         self.tips.insert(hash);
         self.genesis = Some(hash);
         Ok(())
     }
 
     /// Whether `ancestor` is in the past of `block`, or is `block` itself.
+    ///
+    /// Answered by the [`Reachability`] index, not by walking the DAG.
     pub fn is_dag_ancestor_of(&self, ancestor: &VoltHash, block: &VoltHash) -> bool {
+        self.reach.is_dag_ancestor_of(ancestor, block)
+    }
+
+    /// The reachability index.
+    pub fn reachability(&self) -> &Reachability {
+        &self.reach
+    }
+
+    /// The same query as [`BlockDag::is_dag_ancestor_of`], answered by walking the DAG.
+    ///
+    /// Slow, and kept as an oracle to test the index against.
+    #[doc(hidden)]
+    pub fn is_dag_ancestor_of_slow(&self, ancestor: &VoltHash, block: &VoltHash) -> bool {
         if ancestor == block {
             return true;
         }
@@ -427,6 +447,13 @@ impl BlockDag {
         for parent in parents {
             self.tips.remove(parent);
         }
+        self.reach.add_block(
+            hash,
+            parents,
+            ghostdag
+                .selected_parent
+                .expect("a block with parents has a selected parent"),
+        );
         self.tips.insert(hash);
         self.nodes.insert(
             hash,
