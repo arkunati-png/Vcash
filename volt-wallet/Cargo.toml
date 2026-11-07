@@ -1,0 +1,42 @@
+[package]
+name = "volt-wallet"
+version = "0.1.0"
+description = "Voltcash desktop wallet. All key derivation and address encoding comes from librustzcash."
+edition = "2021"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# This crate is its own workspace on purpose: it patches `zcash_address` and `zcash_protocol`
+# with Voltcash prefixes (see `vendor/`), which must never leak into Zebra's own crates.
+[workspace]
+
+[dependencies]
+argon2 = "0.5"
+bip0039 = "0.14.2"
+chacha20poly1305 = "0.10"
+dirs = "7.0.0"
+eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "default_fonts"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+qrcode = "0.14.1"
+rand = "0.8"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+wgpu = { version = "27", default-features = false, features = ["dx12", "wgsl"] }
+zcash_address = "0.14"
+zcash_keys = { version = "0.17", features = ["transparent-inputs", "orchard", "sapling"] }
+zcash_protocol = "0.11"
+zcash_transparent = "0.11"
+zeroize = "1.9.1"
+zip32 = "0.3"
+
+[patch.crates-io]
+zcash_address = { path = "vendor/zcash_address" }
+zcash_protocol = { path = "vendor/zcash_protocol" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+[build-dependencies]
+winres = "0.1.12"
