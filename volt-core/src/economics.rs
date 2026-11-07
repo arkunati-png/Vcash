@@ -67,17 +67,31 @@ impl Economics {
     ///
     /// - 0.05 VOLT per block, halving yearly (63,072,000 blocks at 2 per second), with a
     ///   0.001 VOLT tail;
-    /// - miners start with 70% of each reward and fall by 5 points every ~36 days to 50%.
+    /// - a flat 60% of every reward to miners and 40% locked as protocol-owned liquidity, from
+    ///   the first block.
     pub const fn mainnet() -> Self {
         Self {
             initial_emission: VOLT / 20,
             tail_emission: VOLT / 1_000,
             halving_interval: 63_072_000,
+            miner_share_start_bps: 6_000,
+            miner_share_end_bps: 6_000,
+            miner_share_step_bps: 0,
+            miner_share_taper_interval: u64::MAX,
+            min_payout: 10_000,
+        }
+    }
+
+    /// The same emission as [`Economics::mainnet`], but miners start with 70% of each reward and
+    /// fall by 5 points every ~36 days to 50%. Not used by default; it keeps the taper logic
+    /// exercised and is available to networks that want it.
+    pub const fn tapered() -> Self {
+        Self {
             miner_share_start_bps: 7_000,
             miner_share_end_bps: 5_000,
             miner_share_step_bps: 500,
             miner_share_taper_interval: 6_307_200,
-            min_payout: 10_000,
+            ..Self::mainnet()
         }
     }
 
@@ -187,7 +201,7 @@ mod tests {
 
     #[test]
     fn miner_share_tapers_from_70_to_50_percent() {
-        let e = Economics::mainnet();
+        let e = Economics::tapered();
         let step = e.miner_share_taper_interval;
 
         assert_eq!(e.miner_share_bps(0), 7_000);
@@ -205,8 +219,22 @@ mod tests {
     }
 
     #[test]
-    fn split_follows_the_share_and_conserves_value() {
+    fn mainnet_pays_miners_a_flat_60_percent() {
         let e = Economics::mainnet();
+        for score in [0, 1, 63_072_000, u64::MAX] {
+            assert_eq!(e.miner_share_bps(score), 6_000);
+        }
+        assert_eq!(e.split(1_000_000, 0).unwrap(), (600_000, 400_000));
+        // The miner part rounds down, so the remainder goes to the reserve.
+        assert_eq!(e.split(11, 0).unwrap(), (6, 5));
+        assert_eq!(e.split(1_001, 0).unwrap(), (600, 401));
+        // An odd reward is fine away from exactly 50%.
+        assert!(e.split(5_000_001, 0).is_ok());
+    }
+
+    #[test]
+    fn split_follows_the_share_and_conserves_value() {
+        let e = Economics::tapered();
 
         let (miners, pol) = e.split(1_000_000, 0).unwrap();
         assert_eq!((miners, pol), (700_000, 300_000));

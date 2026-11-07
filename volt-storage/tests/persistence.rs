@@ -196,7 +196,7 @@ fn replay_revalidates_so_a_forged_log_is_refused() {
         Consensus::genesis_block(0),
         Arc::new(Blake2bPowHasher),
         Arc::new(DevTxDecoder),
-        ConsensusConfig::devnet(), // mainnet economics: 70/30
+        ConsensusConfig::devnet(), // mainnet economics: 60/40
         SyncPolicy::Never,
     );
     assert!(matches!(

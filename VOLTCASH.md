@@ -26,7 +26,7 @@ Eight crates added to this Zebra workspace. They reuse `zebra-chain` types (`Tra
 | Fees: tier floor **and** per-action **and** per-KB | `volt-core/src/fee.rs`; exact balance in `RamUtxoStore` |
 | Block caps (bytes, actions) | `BlockValidator::validate` |
 | RandomX replaces Equihash | `BlockValidator::validate` calls `PowHasher` |
-| Emission halving + tail; miner share tapering 70% → 50% | `volt-core/src/economics.rs` |
+| Emission halving + tail; flat 60% miner / 40% POL split (a taper is supported) | `volt-core/src/economics.rs` |
 | At most 100 unique payout addresses, each at least the minimum payout | `coinbase::check_coinbase` |
 | Scheduled miner / POL split | `check_coinbase` per block; `EpochAccumulator::settle` per 200-block epoch |
 | POL permanently locked | `PolReserve` has no withdraw API |
@@ -63,7 +63,7 @@ volt-node run --data-dir b --listen 127.0.0.1:8446 --seed 127.0.0.1:8445
 volt-node sim --blocks 300 --miners 3 --batches 2
 ```
 
-Options: `--economics mainnet|fifty-fifty`, `--maturity STEPS`, `--pow blake2b|randomx`,
+Options: `--economics mainnet|tapered|fifty-fifty`, `--maturity STEPS`, `--pow blake2b|randomx`,
 `--real-txs` (needs `--features zebra-proofs`). RandomX needs CMake and a C++ compiler
 (`--features randomx`); on `windows-gnu` also set `RUSTFLAGS='-C link-arg=-lstdc++'`.
 
@@ -114,9 +114,10 @@ balances can never overflow or be silently clamped.
 
 ## Economics
 
-`Economics::mainnet()`: 0.05 VOLT per block, halving yearly, 0.001 VOLT tail; miners keep 70% of
-each reward, falling 5 points about every 36 days to 50%; the rest is locked as
-protocol-owned liquidity. `Economics::fifty_fifty()` is a flat, exact 50/50 from the first block.
+`Economics::mainnet()`: 0.05 VOLT per block, halving yearly, 0.001 VOLT tail; miners keep a flat
+60% of each reward and the other 40% is locked as protocol-owned liquidity, from the first block.
+`Economics::tapered()` is the same emission with miners starting at 70% and falling to 50%;
+`Economics::fifty_fifty()` is a flat, exact 50/50.
 
 Fees are **exact**: a transaction's value must balance to `inputs = outputs + fee`, where
 `fee = max(tier, 2,000 zats per action, 2,000 zats per KB)` and the tier is 10,000 zats

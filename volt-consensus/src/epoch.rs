@@ -192,7 +192,7 @@ impl EpochAccumulator {
     /// Settles the completed epoch and starts the next one.
     ///
     /// Enforces the schedule: the miners were paid exactly the scheduled share of the epoch's
-    /// total, and exactly the rest goes to the reserve (an exact 50/50 once the taper is over).
+    /// total, and exactly the rest goes to the reserve (an exact 50/50 under a flat 50/50 schedule).
     /// On error the accumulator is unchanged.
     pub fn settle(&mut self) -> Result<EpochSettlement, EpochError> {
         if !self.is_complete() {
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn a_tapered_epoch_settles_at_the_scheduled_share() {
-        let econ = Economics::mainnet();
+        let econ = Economics::tapered();
         let mut acc = EpochAccumulator::new();
         fill(&mut acc, &econ, 0, 0);
         let s = acc.settle().unwrap();
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn an_epoch_may_span_a_taper_step() {
         // Half the blocks are rewarded at 70%, half at 65%: the totals still follow the schedule.
-        let econ = Economics::mainnet();
+        let econ = Economics::tapered();
         let step = econ.miner_share_taper_interval;
         let mut acc = EpochAccumulator::new();
         for i in 0..EPOCH_LENGTH {

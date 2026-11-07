@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn the_split_follows_the_taper() {
-        let econ = Economics::mainnet();
+        let econ = Economics::tapered();
         let fees = Amount::new(0);
 
         // Early: 70% to miners, 30% to POL.

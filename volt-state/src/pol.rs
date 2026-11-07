@@ -119,7 +119,7 @@ mod tests {
     fn locks_consistent_settlements_in_order() {
         let mut reserve = PolReserve::new();
         reserve.lock(settlement(0, 500, 500)).unwrap();
-        // A 70/30 epoch under the taper: only the POL part (300) is locked.
+        // A 70/30 epoch (a tapered schedule): only the POL part (300) is locked.
         reserve.lock(settlement(1, 700, 300)).unwrap();
         assert_eq!(reserve.locked().zatoshis(), 800);
 

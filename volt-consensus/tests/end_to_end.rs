@@ -451,8 +451,8 @@ fn rejects_wrong_difficulty_and_tampered_commitments() {
 }
 
 #[test]
-fn the_engine_enforces_the_tapered_miner_share() {
-    // Production economics: miners get 70% at the start, the rest is locked as POL.
+fn the_engine_enforces_the_miner_share() {
+    // Production economics: miners get a flat 60%, the rest is locked as POL.
     let mut c = new_consensus_with(ConsensusConfig::devnet());
     let ctx = c.template_context();
     let block = mine_on(&c, &ctx, vec![], &miners(5, 1), 500);
@@ -463,14 +463,14 @@ fn the_engine_enforces_the_tapered_miner_share() {
         .iter()
         .map(|p| p.amount.zatoshis())
         .sum();
-    assert_eq!(paid, BASE_EMISSION_PER_BLOCK * 7 / 10);
+    assert_eq!(paid, BASE_EMISSION_PER_BLOCK * 6 / 10);
     assert_eq!(
         block.coinbase.pol_contribution.zatoshis(),
-        BASE_EMISSION_PER_BLOCK * 3 / 10
+        BASE_EMISSION_PER_BLOCK * 4 / 10
     );
     c.submit_block(block, 1_000).unwrap();
 
-    // A miner who keeps 50/50 accounting under a 70/30 schedule (paying itself too little, or
+    // A miner who deviates from the 60/40 schedule (paying itself too little, or
     // POL too much) is off schedule and rejected.
     let ctx = c.template_context();
     let mut wrong = c

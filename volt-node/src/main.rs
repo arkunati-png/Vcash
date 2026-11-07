@@ -2,10 +2,10 @@
 //!
 //! ```text
 //! volt-node run [--data-dir DIR] [--listen ADDR] [--seed ADDR]... [--mine] [--blocks N]
-//!               [--batches N] [--name TAG] [--economics mainnet|fifty-fifty] [--maturity STEPS]
+//!               [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]
 //!               [--pow blake2b|randomx] [--real-txs]
 //! volt-node sim [--blocks ROUNDS] [--miners N] [--batches PER_BLOCK] [--pow blake2b|randomx]
-//!               [--economics mainnet|fifty-fifty] [--maturity STEPS]
+//!               [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]
 //! ```
 //!
 //! `run` starts a persistent node that talks to other nodes over TCP. `sim` runs several miners
@@ -25,10 +25,10 @@ use zebra_chain::{parameters::NetworkKind, transparent::Address};
 
 const SIM_USAGE: &str =
     "usage: volt-node sim [--blocks ROUNDS] [--miners N] [--batches PER_BLOCK] \
-     [--pow blake2b|randomx] [--economics mainnet|fifty-fifty] [--maturity STEPS]";
+     [--pow blake2b|randomx] [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]";
 
 const RUN_USAGE: &str = "usage: volt-node run [--data-dir DIR] [--listen ADDR] [--seed ADDR]... \
-     [--mine] [--blocks N] [--batches N] [--name TAG] [--economics mainnet|fifty-fifty] \
+     [--mine] [--blocks N] [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty] \
      [--maturity STEPS] [--pow blake2b|randomx] [--real-txs]";
 
 /// Pulls the value that follows a flag.
@@ -39,6 +39,7 @@ fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> 
 fn economics(name: &str) -> Result<Economics> {
     match name {
         "mainnet" => Ok(Economics::mainnet()),
+        "tapered" => Ok(Economics::tapered()),
         "fifty-fifty" => Ok(Economics::fifty_fifty()),
         other => bail!("unknown --economics {other}"),
     }

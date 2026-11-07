@@ -35,15 +35,15 @@ fn parallel_miners_converge_and_settle_epochs() {
     );
 
     // Protocol-owned liquidity: every settled epoch follows the schedule. At the start of the production
-    // schedule that is 70% to miners and 30% locked as protocol-owned liquidity.
+    // schedule that is 60% to miners and 40% locked as protocol-owned liquidity.
     assert!(!report.settlements.is_empty());
     for (i, s) in report.settlements.iter().enumerate() {
         assert_eq!(s.epoch, i as u64);
         assert_eq!(s.blocks, 200);
         assert_eq!(
             s.miner_amount.zatoshis() * 10,
-            s.total_reward.zatoshis() * 7,
-            "70% of the epoch reward goes to miners"
+            s.total_reward.zatoshis() * 6,
+            "60% of the epoch reward goes to miners"
         );
         assert_eq!(
             s.miner_amount.zatoshis() + s.pol_amount.zatoshis(),
