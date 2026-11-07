@@ -1,6 +1,7 @@
 //! The multi-miner devnet simulation.
 
 use std::{
+    collections::HashSet,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -10,7 +11,7 @@ use tracing::info;
 use volt_consensus::{Consensus, ConsensusConfig};
 use volt_core::{
     constants::{BATCH_SIZE, MAX_BLOCK_PARENTS, TARGET_BLOCK_INTERVAL_MS},
-    DevTxDecoder, Economics, VoltBlock,
+    DevTxDecoder, Economics, VoltBlock, VoltHash,
 };
 use volt_crypto::{Blake2bPowHasher, PowHasher};
 use volt_network::{GossipHub, GossipPeer, VoltMessage};
@@ -163,6 +164,7 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
     }
 
     let mut wallet = DevWallet::new();
+    let mut counted: HashSet<VoltHash> = HashSet::new();
     let mut report = SimReport {
         blocks_mined: 0,
         dag_blocks: 0,
@@ -235,7 +237,13 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
             let outcome = node.consensus.submit_block(block.clone(), now_ms)?;
             node.peer.broadcast(&VoltMessage::NewBlock(block.encode()));
             if index == 0 {
-                track(&mut report, &mut wallet, &node.consensus, &outcome);
+                track(
+                    &mut report,
+                    &mut wallet,
+                    &mut counted,
+                    &node.consensus,
+                    &outcome,
+                );
             }
         }
         report.blocks_mined += mined.len() as u64; // lossless: a Vec length fits in u64
@@ -251,7 +259,13 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
                 let outcome = node.consensus.submit_block(block, now_ms)?;
 
                 if index == 0 {
-                    track(&mut report, &mut wallet, &node.consensus, &outcome);
+                    track(
+                        &mut report,
+                        &mut wallet,
+                        &mut counted,
+                        &node.consensus,
+                        &outcome,
+                    );
                 }
             }
         }
@@ -276,6 +290,7 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
 fn track(
     report: &mut SimReport,
     wallet: &mut DevWallet,
+    counted: &mut HashSet<VoltHash>,
     consensus: &Consensus,
     outcome: &volt_consensus::SubmitOutcome,
 ) {
@@ -289,8 +304,11 @@ fn track(
             .block(hash)
             .expect("accepted blocks are stored by the consensus engine");
         wallet.on_accepted(block);
-        report.accepted_batches += block.batches.len();
-        report.accepted_txs += block.batches.len() * BATCH_SIZE;
+        // A chain step that is reverted and re-applied reports its blocks again; count each once.
+        if counted.insert(*hash) {
+            report.accepted_batches += block.batches.len();
+            report.accepted_txs += block.batches.len() * BATCH_SIZE;
+        }
     }
     for settlement in &chain.epochs_locked {
         info!(
