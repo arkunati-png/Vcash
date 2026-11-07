@@ -22,7 +22,7 @@ pub const BATCH_SIZE: usize = 10;
 /// 100 batches * 10 transactions * 2 blocks/s = 2,000 transactions per second.
 pub const MAX_BATCHES_PER_BLOCK: usize = 100;
 
-/// The number of blue-score units in a Thermodynamic POL settlement epoch.
+/// The number of accepted blocks in a POL settlement epoch.
 pub const EPOCH_LENGTH: u64 = 200;
 
 /// How many selected-chain steps deep a step must be before it is final.

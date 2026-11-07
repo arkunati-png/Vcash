@@ -34,7 +34,7 @@ fn parallel_miners_converge_and_settle_epochs() {
         "shielded transactions reveal nullifiers"
     );
 
-    // Thermodynamic POL: every settled epoch follows the schedule. At the start of the production
+    // Protocol-owned liquidity: every settled epoch follows the schedule. At the start of the production
     // schedule that is 70% to miners and 30% locked as protocol-owned liquidity.
     assert!(!report.settlements.is_empty());
     for (i, s) in report.settlements.iter().enumerate() {

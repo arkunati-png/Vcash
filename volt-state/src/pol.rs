@@ -1,4 +1,4 @@
-//! The Thermodynamic protocol-owned liquidity (POL) reserve.
+//! The protocol-owned liquidity (POL) reserve.
 
 use thiserror::Error;
 use zebra_chain::amount::{Amount, NonNegative};
@@ -46,7 +46,7 @@ pub enum PolError {
     Overflow,
 }
 
-/// The on-chain DEX reserve of permanently locked, electricity-backed liquidity.
+/// The on-chain DEX reserve of permanently locked, protocol-owned liquidity.
 ///
 /// There is deliberately no way to withdraw: the only mutation is [`PolReserve::lock`].
 #[derive(Clone, Debug, Default)]

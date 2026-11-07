@@ -5,7 +5,7 @@
 //! - [`difficulty`]: the 500 ms difficulty adjustment and the RandomX key schedule.
 //! - [`coinbase`]: the 100-payout cap and the exact 50/50 miner / POL split.
 //! - [`mempool`]: the bounded, fee-rate-ordered transaction pool.
-//! - [`epoch`]: aggregation and settlement of each 200-block Thermodynamic POL epoch.
+//! - [`epoch`]: aggregation and settlement of each 200-block POL epoch.
 //! - [`validator`]: block validation, with RandomX behind [`volt_crypto::PowHasher`] in place of Equihash.
 //! - [`chain`]: UTXO state and POL settlement following the selected-parent chain.
 //! - [`consensus`]: the [`Consensus`] engine that wires them together.

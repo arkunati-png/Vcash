@@ -102,9 +102,9 @@ which favours transactions that are cheap to verify.
 
 Read this before trusting any of it with value.
 
-- **The POL reserve is not "energy-backed".** It is protocol-owned *issuance*, locked. Nothing
-  defines a counter-asset, an AMM, or a price oracle. That is a design decision that has not been
-  made, and the code does not pretend otherwise.
+- **The POL reserve is locked issuance and nothing more.** It is not paired with any asset and
+  has no AMM or swap logic, so nothing can trade against it yet. What it should hold alongside VOLT
+  is an open design decision.
 - **No external audit.** The consensus rules, fee and reward arithmetic and finality logic were
   tested heavily (property tests, differential tests against a slow oracle, mutation-checked) and
   self-reviewed, but not audited. A fuzzing campaign with `cargo-fuzz` has not been run; the

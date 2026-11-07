@@ -1,4 +1,4 @@
-//! Thermodynamic POL epochs.
+//! POL settlement epochs.
 //!
 //! Every [`EPOCH_LENGTH`] accepted blocks, the epoch's total reward (scheduled emission plus fees)
 //! is settled: miners were paid their scheduled share block by block, and the rest is locked
