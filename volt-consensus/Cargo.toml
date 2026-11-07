@@ -1,0 +1,21 @@
+[package]
+name = "volt-consensus"
+version = "0.1.0"
+description = "Voltcash consensus: GHOSTDAG, RandomX PoW checks, coinbase rules and epoch POL settlement"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+volt-core = { path = "../volt-core" }
+volt-crypto = { path = "../volt-crypto" }
+volt-state = { path = "../volt-state" }
+zebra-chain = { path = "../zebra-chain" }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

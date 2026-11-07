@@ -1,0 +1,30 @@
+[package]
+name = "volt-node"
+version = "0.1.0"
+description = "Voltcash devnet node: multi-miner GHOSTDAG simulation wiring consensus, state, PoW and gossip together"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+
+# Use the real RandomX engine instead of the Blake2b stand-in. Needs CMake and a C++ compiler.
+randomx = ["volt-crypto/randomx"]
+
+[dependencies]
+volt-consensus = { path = "../volt-consensus" }
+volt-core = { path = "../volt-core" }
+volt-crypto = { path = "../volt-crypto" }
+volt-network = { path = "../volt-network" }
+volt-state = { path = "../volt-state" }
+zebra-chain = { path = "../zebra-chain" }
+
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

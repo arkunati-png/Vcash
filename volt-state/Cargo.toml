@@ -1,0 +1,19 @@
+[package]
+name = "volt-state"
+version = "0.1.0"
+description = "Voltcash state: the sharded in-memory UTXO store and the protocol-owned liquidity reserve"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+volt-core = { path = "../volt-core" }
+zebra-chain = { path = "../zebra-chain" }
+
+dashmap = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

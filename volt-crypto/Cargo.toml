@@ -1,0 +1,26 @@
+[package]
+name = "volt-crypto"
+version = "0.1.0"
+description = "Voltcash proof-of-work: the PowHasher abstraction, a Blake2b test hasher and the RandomX engine"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[features]
+default = []
+
+# The real RandomX CPU miner/verifier. Builds the RandomX C++ library, which needs CMake and a C++ compiler.
+randomx = ["dep:randomx-rs"]
+
+[dependencies]
+zebra-chain = { path = "../zebra-chain" }
+
+blake2b_simd = { workspace = true }
+parking_lot = { workspace = true }
+randomx-rs = { workspace = true, optional = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "volt-core"
+version = "0.1.0"
+description = "Voltcash core types: consensus constants, dual-tier fees, rollup batches and DAG blocks"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+zebra-chain = { path = "../zebra-chain" }
+
+blake2b_simd = { workspace = true }
+flate2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

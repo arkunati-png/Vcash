@@ -1,0 +1,22 @@
+[package]
+name = "volt-network"
+version = "0.1.0"
+description = "Voltcash wire messages and an in-process gossip hub"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+volt-core = { path = "../volt-core" }
+
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+
+[lints]
+workspace = true

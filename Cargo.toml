@@ -13,6 +13,12 @@ members = [
         "tower-batch-control",
         "tower-fallback",
         "zebra-fuzz/fuzz",
+        "volt-core",
+        "volt-crypto",
+        "volt-state",
+        "volt-consensus",
+        "volt-network",
+        "volt-node",
 ]
 
 # Keep fuzz-only features out of ordinary node builds. CI selects the full
@@ -32,6 +38,12 @@ default-members = [
         "zebra-utils",
         "tower-batch-control",
         "tower-fallback",
+        "volt-core",
+        "volt-crypto",
+        "volt-state",
+        "volt-consensus",
+        "volt-network",
+        "volt-node",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -200,6 +212,11 @@ zcash_note_encryption = "0.5.1"
 zcash_script = "0.6"
 config = { version = "0.15.14", features = ["toml"] }
 which = "8.0.0"
+# Voltcash crates
+dashmap = "6.1"
+flate2 = "1.1"
+parking_lot = "0.12"
+randomx-rs = "1.6"
 
 [workspace.metadata.release]
 
