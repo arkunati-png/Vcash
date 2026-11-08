@@ -242,10 +242,10 @@ impl Mempool {
     }
 
     /// Removes and returns the best `batches * 10` transactions, highest fee rate first, or
-    /// fewer if the pool holds fewer. The count is always a multiple of the batch size.
+    /// fewer if the pool holds fewer. The last batch may be partly filled.
     pub fn take_batches(&mut self, batches: usize) -> Vec<Arc<dyn BatchableTx>> {
         let size = volt_core::constants::BATCH_SIZE;
-        let available = (self.entries.len() / size).min(batches) * size;
+        let available = self.entries.len().min(batches * size);
         let best: Vec<VoltHash> = self
             .ranking
             .iter()
@@ -253,6 +253,22 @@ impl Mempool {
             .map(|(_, _, txid)| *txid)
             .collect();
         best.iter().filter_map(|txid| self.remove(txid)).collect()
+    }
+
+    /// Like [`Mempool::take_batches`], but leaves the transactions in the pool.
+    ///
+    /// For block templates that may never be solved: a transaction only leaves the pool when a
+    /// block that holds it is accepted.
+    pub fn best_batches(&self, batches: usize) -> Vec<Arc<dyn BatchableTx>> {
+        let available = self
+            .entries
+            .len()
+            .min(batches * volt_core::constants::BATCH_SIZE);
+        self.ranking
+            .iter()
+            .take(available)
+            .filter_map(|(_, _, txid)| self.entries.get(txid).map(|e| e.tx.clone()))
+            .collect()
     }
 
     /// The fee rate of a pooled transaction, in zatoshis per million weight units.
@@ -413,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn take_batches_returns_the_best_in_multiples_of_ten() {
+    fn take_batches_returns_the_best_first_and_may_end_with_a_partial_batch() {
         let (mut pool, state) = pool(100);
         // 23 transactions: 3 are heavy and rank last.
         let mut heavy = Vec::new();
@@ -426,13 +442,15 @@ mod tests {
         }
         assert_eq!(heavy.len(), 2);
 
-        let taken = pool.take_batches(5);
-        assert_eq!(taken.len(), 20, "only whole batches are returned");
+        // Two batches' worth: the best twenty, so the heavy ones stay behind.
+        let taken = pool.take_batches(2);
+        assert_eq!(taken.len(), 20);
         assert_eq!(pool.len(), 3);
         for tx in &taken {
             assert!(!heavy.contains(&tx.txid()), "heavy transactions rank last");
         }
-        // Fewer than ten left: no batch can be formed.
+        // Three left: they still go out, as one partly filled batch.
+        assert_eq!(pool.take_batches(5).len(), 3);
         assert!(pool.take_batches(5).is_empty());
     }
 

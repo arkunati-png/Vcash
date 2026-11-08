@@ -1,6 +1,6 @@
 //! Whole-system devnet tests.
 
-use volt_node::sim::{self, PowKind, SimConfig};
+use volt_node::sim::{self, SimConfig};
 
 #[test]
 fn parallel_miners_converge_and_settle_epochs() {
@@ -11,7 +11,6 @@ fn parallel_miners_converge_and_settle_epochs() {
         rounds: 170,
         miners: 3,
         batches_per_block: 2,
-        pow: PowKind::Blake2b,
         ..SimConfig::default()
     })
     .unwrap();
@@ -35,15 +34,15 @@ fn parallel_miners_converge_and_settle_epochs() {
     );
 
     // Protocol-owned liquidity: every settled epoch follows the schedule. At the start of the production
-    // schedule that is 60% to miners and 40% locked as protocol-owned liquidity.
+    // schedule that is 80% to miners and 20% locked as protocol-owned liquidity.
     assert!(!report.settlements.is_empty());
     for (i, s) in report.settlements.iter().enumerate() {
         assert_eq!(s.epoch, i as u64);
         assert_eq!(s.blocks, 200);
         assert_eq!(
             s.miner_amount.zatoshis() * 10,
-            s.total_reward.zatoshis() * 6,
-            "60% of the epoch reward goes to miners"
+            s.total_reward.zatoshis() * 8,
+            "80% of the epoch reward goes to miners"
         );
         assert_eq!(
             s.miner_amount.zatoshis() + s.pol_amount.zatoshis(),
@@ -64,7 +63,6 @@ fn a_single_miner_works_and_bad_configs_are_rejected() {
         rounds: 20,
         miners: 1,
         batches_per_block: 1,
-        pow: PowKind::Blake2b,
         ..SimConfig::default()
     })
     .unwrap();
@@ -76,7 +74,6 @@ fn a_single_miner_works_and_bad_configs_are_rejected() {
             rounds: 1,
             miners,
             batches_per_block: 1,
-            pow: PowKind::Blake2b,
             ..SimConfig::default()
         })
     };
@@ -92,7 +89,6 @@ fn the_widest_dag_merges_32_parallel_blocks_without_reds() {
         rounds: 6,
         miners: 32,
         batches_per_block: 0,
-        pow: PowKind::Blake2b,
         ..SimConfig::default()
     })
     .unwrap();

@@ -1,11 +1,18 @@
 //! A node that is stopped and restarted comes back to exactly the same state.
 
-use std::{fs::OpenOptions, path::Path, sync::Arc};
+use std::{
+    fs::OpenOptions,
+    path::Path,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use volt_consensus::{Consensus, ConsensusConfig};
 use volt_core::{DevTxDecoder, Economics, VoltBlock};
-use volt_crypto::Blake2bPowHasher;
-use volt_storage::{PersistentConsensus, StorageError, SyncPolicy};
+use volt_crypto::{PowHasher, RandomXEngine};
+use volt_storage::{PersistentConsensus, ReplayMode, StorageError, SyncPolicy};
 use zebra_chain::{parameters::NetworkKind, transparent::Address};
 
 fn config() -> ConsensusConfig {
@@ -15,8 +22,8 @@ fn config() -> ConsensusConfig {
 fn open(path: &Path) -> Result<PersistentConsensus, StorageError> {
     PersistentConsensus::open(
         path,
-        Consensus::genesis_block(0),
-        Arc::new(Blake2bPowHasher),
+        Consensus::test_genesis_block(0),
+        RandomXEngine::shared(),
         Arc::new(DevTxDecoder),
         config(),
         SyncPolicy::Always,
@@ -35,7 +42,7 @@ fn mine(node: &mut PersistentConsensus, count: u64, ts: &mut u64) -> Vec<VoltBlo
     let mut blocks = Vec::new();
     for _ in 0..count {
         let ctx = node.consensus().template_context();
-        *ts += 500;
+        *ts += 850;
         let template = node
             .consensus()
             .build_template(&ctx, vec![], &miners(), *ts)
@@ -166,9 +173,9 @@ fn invalid_blocks_never_reach_the_log() {
     let ctx = node.consensus().template_context();
     let unmined = node
         .consensus()
-        .build_template(&ctx, vec![], &miners(), ts + 500)
+        .build_template(&ctx, vec![], &miners(), ts + 850)
         .unwrap();
-    assert!(node.submit_block(unmined, ts + 500).is_err());
+    assert!(node.submit_block(unmined, ts + 850).is_err());
 
     assert_eq!(
         std::fs::metadata(&path).unwrap().len(),
@@ -193,8 +200,8 @@ fn replay_revalidates_so_a_forged_log_is_refused() {
     }
     let result = PersistentConsensus::open(
         &path,
-        Consensus::genesis_block(0),
-        Arc::new(Blake2bPowHasher),
+        Consensus::test_genesis_block(0),
+        RandomXEngine::shared(),
         Arc::new(DevTxDecoder),
         ConsensusConfig::devnet(), // mainnet economics: 60/40
         SyncPolicy::Never,
@@ -217,8 +224,8 @@ fn a_log_from_another_network_is_refused() {
     // A different genesis timestamp is a different network.
     let result = PersistentConsensus::open(
         &path,
-        Consensus::genesis_block(12345),
-        Arc::new(Blake2bPowHasher),
+        Consensus::test_genesis_block(12345),
+        RandomXEngine::shared(),
         Arc::new(DevTxDecoder),
         config(),
         SyncPolicy::Never,
@@ -229,4 +236,143 @@ fn a_log_from_another_network_is_refused() {
             volt_storage::LogError::WrongGenesis { .. }
         ))
     ));
+}
+
+/// Counts how many proofs of work it is asked to check.
+struct Counting {
+    inner: Arc<dyn PowHasher>,
+    calls: AtomicU64,
+}
+
+impl Counting {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: RandomXEngine::shared(),
+            calls: AtomicU64::new(0),
+        })
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl PowHasher for Counting {
+    fn pow_hash(&self, seed: &[u8; 32], input: &[u8]) -> Result<[u8; 32], volt_crypto::PowError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.pow_hash(seed, input)
+    }
+}
+
+fn open_counting(
+    path: &Path,
+    pow: Arc<Counting>,
+    mode: ReplayMode,
+) -> Result<PersistentConsensus, StorageError> {
+    PersistentConsensus::open_with(
+        path,
+        Consensus::test_genesis_block(0),
+        pow,
+        Arc::new(DevTxDecoder),
+        config(),
+        SyncPolicy::Always,
+        mode,
+    )
+    .map(|(node, _)| node)
+}
+
+#[test]
+fn trusting_the_own_log_skips_old_work_checks_and_reaches_the_same_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blocks.log");
+    let before = {
+        let mut node = open(&path).unwrap();
+        let mut ts = 0;
+        mine(&mut node, 60, &mut ts);
+        snapshot(&node)
+    };
+
+    let full = Counting::new();
+    let node = open_counting(&path, full.clone(), ReplayMode::Full).unwrap();
+    assert_same(&before, &snapshot(&node));
+    assert_eq!(full.calls(), 60, "a full replay checks every block's work");
+    drop(node);
+
+    let trusting = Counting::new();
+    let node = open_counting(
+        &path,
+        trusting.clone(),
+        ReplayMode::TrustOwnLog { recheck_tail: 10 },
+    )
+    .unwrap();
+    assert_same(&before, &snapshot(&node));
+    assert_eq!(
+        trusting.calls(),
+        10,
+        "only the newest ten blocks' work is checked again"
+    );
+
+    // After the replay everything is checked in full again.
+    let mut node = node;
+    let mut ts = 100_000;
+    let calls = trusting.calls();
+    mine(&mut node, 1, &mut ts);
+    assert!(
+        trusting.calls() > calls,
+        "a block that arrives after the replay is not trusted"
+    );
+}
+
+#[test]
+fn a_forged_newest_block_is_still_refused_in_trusting_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("blocks.log");
+    let template = {
+        let mut node = open(&path).unwrap();
+        let mut ts = 0;
+        mine(&mut node, 20, &mut ts);
+        let ctx = node.consensus().template_context();
+        node.consensus()
+            .build_template(&ctx, vec![], &miners(), ts + 850)
+            .unwrap()
+    };
+
+    // A block whose nonce does not solve it, written into the log with a valid checksum.
+    let mut forged = template;
+    let seed = {
+        let node = open(&path).unwrap();
+        node.consensus().template_context().seed
+    };
+    for nonce in 0.. {
+        forged.header.nonce = nonce;
+        let hash = RandomXEngine::shared()
+            .pow_hash(&seed, &forged.header.pow_blob())
+            .unwrap();
+        if !volt_crypto::meets_target(&hash, forged.header.bits) {
+            break;
+        }
+    }
+    let genesis = Consensus::test_genesis_block(0).hash();
+    let mut log = volt_storage::BlockLog::open(&path, &genesis, SyncPolicy::Always)
+        .unwrap()
+        .0;
+    log.append(&forged.encode()).unwrap();
+    drop(log);
+
+    for mode in [
+        ReplayMode::Full,
+        ReplayMode::TrustOwnLog { recheck_tail: 5 },
+    ] {
+        let refused = open_counting(&path, Counting::new(), mode);
+        assert!(
+            matches!(
+                refused,
+                Err(StorageError::ReplayRejected {
+                    source: volt_consensus::ConsensusError::InsufficientPow,
+                    ..
+                })
+            ),
+            "{mode:?}: {refused:?}"
+        );
+    }
 }

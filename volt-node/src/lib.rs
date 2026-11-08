@@ -17,5 +17,7 @@
 //!    along the selected chain and settles each 200-block epoch into the POL reserve.
 
 pub mod node;
+pub mod rpc;
 pub mod sim;
+pub mod stratum;
 pub mod wallet;

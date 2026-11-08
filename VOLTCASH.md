@@ -7,7 +7,7 @@ Eight crates added to this Zebra workspace. They reuse `zebra-chain` types (`Tra
 | Crate | Responsibility |
 | --- | --- |
 | `volt-core` | Constants, `Economics` (emission, miner share), size-aware fees, `RollupBatch` (10-to-1), DAG block types, bounded codec |
-| `volt-crypto` | `PowHasher` trait, `Blake2bPowHasher` (tests/devnet), `RandomXEngine` (`randomx` feature) |
+| `volt-crypto` | `PowHasher` trait and `RandomXEngine` (the only proof of work) |
 | `volt-state` | `RamUtxoStore` (DashMap-sharded, in RAM), coinbase maturity, proof-verification hook, append-only `PolReserve` |
 | `volt-consensus` | GHOSTDAG (`k = 32`), reachability index, difficulty, coinbase rules, epochs, mempool, block validation, chain state, `Consensus` engine |
 | `volt-verify` | Sapling / Orchard proof and transparent-script verification for real Zcash-format transactions |
@@ -21,12 +21,12 @@ Eight crates added to this Zebra workspace. They reuse `zebra-chain` types (`Tra
 | --- | --- |
 | GHOSTDAG, `k = 32`, blue/red coloring | `volt-consensus/src/ghostdag.rs` |
 | Fast "is it in the past of" queries | `volt-consensus/src/reachability.rs` (jump pointers + covering sets) |
-| 500 ms target interval | `difficulty::next_bits` (adjusts per blue block) |
-| 10 txs per `RollupBatch`, compressed payload | `volt-core/src/batch.rs` |
+| 850 ms target interval | `difficulty::next_bits` (adjusts per blue block) |
+| Up to 10 txs per `RollupBatch` (a quiet chain closes a smaller batch), compressed payload | `volt-core/src/batch.rs` |
 | Fees: tier floor **and** per-action **and** per-KB | `volt-core/src/fee.rs`; exact balance in `RamUtxoStore` |
 | Block caps (bytes, actions) | `BlockValidator::validate` |
 | RandomX replaces Equihash | `BlockValidator::validate` calls `PowHasher` |
-| Emission halving + tail; flat 60% miner / 40% POL split (a taper is supported) | `volt-core/src/economics.rs` |
+| Emission halving + tail; flat 80% miner / 20% POL split (a taper is supported) | `volt-core/src/economics.rs` |
 | At most 100 unique payout addresses, each at least the minimum payout | `coinbase::check_coinbase` |
 | Scheduled miner / POL split | `check_coinbase` per block; `EpochAccumulator::settle` per 200-block epoch |
 | POL permanently locked | `PolReserve` has no withdraw API |
@@ -57,15 +57,15 @@ Run a node, or the simulation:
 ```bash
 # Two nodes, in two terminals: one mines, one follows it over TCP.
 volt-node run --data-dir a --listen 127.0.0.1:8445 --mine
-volt-node run --data-dir b --listen 127.0.0.1:8446 --seed 127.0.0.1:8445
+volt-node run --data-dir b --listen 127.0.0.1:8446 --seed 127.0.0.1:8445 --easy-pow
 
 # A multi-miner simulation in one process.
 volt-node sim --blocks 300 --miners 3 --batches 2
 ```
 
-Options: `--economics mainnet|tapered|fifty-fifty`, `--maturity STEPS`, `--pow blake2b|randomx`,
-`--real-txs` (needs `--features zebra-proofs`). RandomX needs CMake and a C++ compiler
-(`--features randomx`); on `windows-gnu` also set `RUSTFLAGS='-C link-arg=-lstdc++'`.
+Options: `--economics mainnet|tapered|fifty-fifty`, `--maturity STEPS`, `--easy-pow`,
+`--real-txs` (needs `--features zebra-proofs`). `--easy-pow` makes blocks about 64 times easier
+to find (still RandomX) for a local test chain. RandomX needs CMake and a C++ compiler.
 
 ## How state and finality work
 
@@ -112,10 +112,57 @@ Sprout and Ironwood are refused outright, because nothing tracks their pools.
 Shielded values are carried as wide integers end to end, so adding the Sapling and Orchard
 balances can never overflow or be silently clamped.
 
+### How a wallet follows the chain
+
+The node lists its accepted chain steps in the order they were applied (`STEPS` on the wallet
+service, `Consensus::step_views`). Each step carries the shielded transactions in application order
+with their nullifiers, note commitments and encrypted notes, plus the Sapling tree root and size
+after the step. A wallet appends the commitments in that order and must arrive at exactly the
+node's root after every step; `volt-consensus/tests/step_feed.rs` checks this with parallel blocks
+and across a reorg, and the wallet's own tests check it against a real node. A changed closing
+block at a step the wallet already has means a reorg, and the wallet rescans.
+
+Real payments (Sapling, version 5 transactions, Nu6.3 branch) are built and proven by the wallet
+with librustzcash, and verified by `volt-verify` when the node runs with `--real-txs`
+(`cargo build --release -p volt-node --features zebra-proofs`). Rollup batches may hold fewer than
+ten transactions, so a lone payment on a quiet chain is not left waiting for nine others.
+
+## Mining
+
+Proof of work is RandomX. A block's hash is `RandomX(seed, blob)` where the 76-byte `blob` is built
+from a commitment to the header and the 64-bit nonce (`VoltHeader::pow_blob`), laid out like a
+Monero hashing blob: the low 32 bits of the nonce sit at offset 39, where XMRig writes its nonce, and
+the high 32 bits (the stratum extra nonce, different for every connection) just before them.
+
+The RandomX key (`seed`) changes every `POW_KEY_EPOCH_LENGTH` blue blocks (2^18, about 62 hours at
+850 ms) and lags by one period, so a miner knows the next key a full period ahead and rebuilds its
+2 GB dataset rarely. It is separate from the 200-block reward epoch.
+
+`volt-node run --stratum ADDR` serves a Monero-style stratum protocol (login, job,
+submit, keepalive; algorithm `rx/0`). Point XMRig at it with your Voltcash address as the user:
+
+```text
+xmrig -o 127.0.0.1:3333 -a rx/0 -u tv...your address... -p x
+```
+
+The job target is the block target, so this is solo mining: a share is a block. The server
+verifies every nonce itself.
+
+There is no other proof of work. The old Blake2b stand-in is gone, and tests, simulations and local
+chains use RandomX too, with an easy target: `--easy-pow` on the node, `Consensus::test_genesis_block`
+and `RandomXEngine::shared()` in code. The easy limit (`TEST_POW_LIMIT_BITS`, 2^253, about 8 hashes
+per block) is committed in the genesis block, so an easy-pow chain is a different network from the
+production one and the two cannot be mixed up. RandomX needs CMake and a C++ compiler; on the
+GNU Windows toolchain `.cargo/config.toml` links the C++ runtime.
+
+The production limit is `POW_LIMIT_BITS` (about 512 expected hashes), so a single light-mode
+RandomX thread (about 70 H/s) finds a block roughly every 7 to 10 seconds, and difficulty rises as
+hash power joins. The genesis start difficulty is that limit.
+
 ## Economics
 
 `Economics::mainnet()`: 0.05 VOLT per block, halving yearly, 0.001 VOLT tail; miners keep a flat
-60% of each reward and the other 40% is locked as protocol-owned liquidity, from the first block.
+80% of each reward and the other 20% is locked as protocol-owned liquidity, from the first block.
 `Economics::tapered()` is the same emission with miners starting at 70% and falling to 50%;
 `Economics::fifty_fifty()` is a flat, exact 50/50.
 

@@ -11,11 +11,14 @@
 //!   written to the log only if it is valid, and reopening replays the log through full
 //!   validation, so a tampered or stale log cannot smuggle in invalid state.
 //!
-//! Replay costs time proportional to the chain. A snapshot of the UTXO set would speed up
-//! restarts and is a natural next step; the log itself stays the source of truth.
+//! Replay costs time proportional to the chain. Most of that time is one RandomX hash per block
+//! and the proof checks of every shielded transaction, so [`ReplayMode::TrustOwnLog`] skips both
+//! for all but the newest records of a node's own log. The log itself stays the source of truth.
 
 mod log;
 mod persistent;
+mod trust;
 
 pub use log::{BlockLog, LogError, OpenReport, SyncPolicy};
 pub use persistent::{PersistentConsensus, StorageError};
+pub use trust::ReplayMode;

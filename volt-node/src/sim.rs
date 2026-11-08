@@ -13,7 +13,7 @@ use volt_core::{
     constants::{BATCH_SIZE, MAX_BLOCK_PARENTS, TARGET_BLOCK_INTERVAL_MS},
     DevTxDecoder, Economics, VoltBlock, VoltHash,
 };
-use volt_crypto::{Blake2bPowHasher, PowHasher};
+use volt_crypto::RandomXEngine;
 use volt_network::{GossipHub, GossipPeer, VoltMessage};
 use volt_state::EpochSettlement;
 use zebra_chain::{
@@ -21,28 +21,6 @@ use zebra_chain::{
 };
 
 use crate::wallet::{DevWallet, Spendability};
-
-/// Which proof-of-work function the miners use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PowKind {
-    /// Blake2b-256: fast, for devnets and tests. Not CPU-hard.
-    Blake2b,
-    /// RandomX in light mode.
-    #[cfg(feature = "randomx")]
-    RandomX,
-}
-
-impl PowKind {
-    fn hasher(self) -> Result<Arc<dyn PowHasher>> {
-        Ok(match self {
-            Self::Blake2b => Arc::new(Blake2bPowHasher),
-            #[cfg(feature = "randomx")]
-            Self::RandomX => Arc::new(
-                volt_crypto::RandomXEngine::new().context("could not start the RandomX engine")?,
-            ),
-        })
-    }
-}
 
 /// Simulation parameters.
 #[derive(Clone, Debug)]
@@ -53,8 +31,6 @@ pub struct SimConfig {
     pub miners: usize,
     /// How many 10-transaction rollup batches the first miner packs into each block.
     pub batches_per_block: usize,
-    /// The proof-of-work function.
-    pub pow: PowKind,
     /// The monetary policy.
     pub economics: Economics,
     /// How many chain steps a coinbase output must age before it can be spent.
@@ -67,7 +43,6 @@ impl Default for SimConfig {
             rounds: 300,
             miners: 3,
             batches_per_block: 2,
-            pow: PowKind::Blake2b,
             economics: Economics::mainnet(),
             coinbase_maturity: 20,
         }
@@ -143,7 +118,10 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
     let started = Instant::now();
 
     let hub = GossipHub::new(4096);
-    let genesis = Consensus::genesis_block(0);
+    // The simulation is RandomX too, with the easy test target, and one engine for all its nodes
+    // (they all check the same blocks, so each hash is computed once).
+    let genesis = Consensus::test_genesis_block(0);
+    let pow = RandomXEngine::shared();
     let mut nodes = Vec::new();
     for id in 0..config.miners {
         let consensus_config = ConsensusConfig::devnet()
@@ -151,7 +129,7 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
             .with_coinbase_maturity(config.coinbase_maturity);
         let consensus = Consensus::new(
             genesis.clone(),
-            config.pow.hasher()?,
+            pow.clone(),
             Arc::new(DevTxDecoder),
             consensus_config,
         )
@@ -182,7 +160,7 @@ pub fn run(config: SimConfig) -> Result<SimReport> {
         elapsed: Duration::ZERO,
     };
 
-    // One block per miner per round; rounds are spaced so the chain makes one block per 500 ms.
+    // One block per miner per round; rounds are spaced so the chain makes one block per 850 ms.
     let round_ms = TARGET_BLOCK_INTERVAL_MS * config.miners as u64; // lossless: miners < 33
     let mut round_start_ms = 0u64;
 

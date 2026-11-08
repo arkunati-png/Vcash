@@ -13,7 +13,8 @@ use tracing::{debug, info, warn};
 use volt_consensus::{Consensus, ConsensusConfig, ConsensusError, Mempool, MempoolError};
 use volt_core::{
     constants::{MAX_BLOCK_PARENTS, MEMPOOL_MAX_TXS},
-    DevTxDecoder, Economics, NoVerification, TxDecoder, TxVerifier, VoltBlock, VoltHash,
+    BatchableTx, DevTxDecoder, Economics, NoVerification, TxDecoder, TxVerifier, VoltBlock,
+    VoltHash,
 };
 use volt_crypto::{meets_target, PowHasher};
 use volt_network::{
@@ -46,6 +47,13 @@ pub struct NodeConfig {
     pub batches_per_block: usize,
     /// The genesis timestamp. It identifies the network, so every node must agree.
     pub genesis_timestamp_ms: u64,
+    /// The easiest target the network allows, committed in the genesis block. The production
+    /// value takes about 512 RandomX hashes per block; [`NodeConfig::with_easy_pow`] makes it
+    /// about 8, for tests and local chains.
+    pub pow_limit_bits: u32,
+    /// How much of the block log to check again on start. Checking everything takes one RandomX
+    /// hash per block and every proof again.
+    pub replay: volt_storage::ReplayMode,
     /// When appended blocks are forced to disk.
     pub sync: SyncPolicy,
     /// The time, in milliseconds, written into the blocks this node mines. Production uses the
@@ -54,6 +62,14 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
+    /// Makes blocks about 64 times easier to find (still RandomX), for tests and local chains.
+    /// This is a different network from the production one: the limit is part of the genesis
+    /// hash.
+    pub fn with_easy_pow(mut self) -> Self {
+        self.pow_limit_bits = volt_core::constants::TEST_POW_LIMIT_BITS;
+        self
+    }
+
     /// A devnet node: proof-less `DevTx` transactions, no verification and no maturity.
     pub fn devnet(
         data_dir: PathBuf,
@@ -71,10 +87,42 @@ impl NodeConfig {
             miner_addresses,
             batches_per_block: 2,
             genesis_timestamp_ms: 0,
+            pow_limit_bits: volt_core::constants::POW_LIMIT_BITS,
+            replay: volt_storage::ReplayMode::DEFAULT_TRUSTING,
             sync: SyncPolicy::Never,
             mining_clock: Arc::new(now_ms),
         }
     }
+}
+
+/// One shielded transaction as a light wallet sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepTx {
+    /// The transaction id.
+    pub txid: VoltHash,
+    /// The nullifiers it reveals.
+    pub nullifiers: Vec<[u8; 32]>,
+    /// The Sapling note commitments it creates, in tree order.
+    pub sapling_commitments: Vec<[u8; 32]>,
+    /// The Sapling outputs with their encrypted notes, in the same order. Empty for devnet
+    /// transactions, which have no encrypted notes.
+    pub sapling_outputs: Vec<volt_core::SaplingOutputData>,
+}
+
+/// One chain step as a light wallet sees it: the shielded transactions applied, in the exact
+/// order they were applied, and the Sapling tree root and size once the step is done.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepFeed {
+    /// The step's position in the chain. Genesis is step 0.
+    pub index: usize,
+    /// The chain block that closes the step. A wallet that sees this change knows there was a reorg.
+    pub block: VoltHash,
+    /// The Sapling tree root after the step.
+    pub sapling_root: [u8; 32],
+    /// The number of Sapling notes after the step.
+    pub sapling_notes: u64,
+    /// The shielded transactions of the step, in application order.
+    pub txs: Vec<StepTx>,
 }
 
 /// A snapshot of a node's state.
@@ -288,13 +336,14 @@ impl Node {
             verifier: config.verifier.clone(),
             coinbase_maturity: config.coinbase_maturity,
         };
-        let (chain, report) = PersistentConsensus::open(
+        let (chain, report) = PersistentConsensus::open_with(
             &log_path,
-            Consensus::genesis_block(config.genesis_timestamp_ms),
+            Consensus::genesis_block_with_limit(config.genesis_timestamp_ms, config.pow_limit_bits),
             config.pow.clone(),
             config.decoder.clone(),
             consensus_config,
             config.sync,
+            config.replay,
         )
         .with_context(|| format!("cannot open the block log {}", log_path.display()))?;
         info!(
@@ -356,6 +405,171 @@ impl Node {
             .contains(outpoint)
     }
 
+    /// Every unspent output locked by `script`, with its value in zatoshis.
+    pub fn unspent_for(
+        &self,
+        script: &zebra_chain::transparent::Script,
+    ) -> Vec<(zebra_chain::transparent::OutPoint, i64)> {
+        self.inner
+            .chain
+            .lock()
+            .consensus()
+            .utxos()
+            .unspent_for_script(script)
+    }
+
+    /// The newest `count` blocks in the order this node received them, newest first, with their
+    /// position in that order, plus the total number of blocks.
+    pub fn recent_blocks(&self, count: usize) -> (usize, Vec<(usize, VoltBlock)>) {
+        let chain = self.inner.chain.lock();
+        let order = chain.arrival_order();
+        let blocks = order
+            .iter()
+            .enumerate()
+            .rev()
+            .take(count)
+            .filter_map(|(i, hash)| chain.consensus().block(hash).map(|b| (i, b.clone())))
+            .collect();
+        (order.len(), blocks)
+    }
+
+    /// A block and its position in arrival order.
+    pub fn block_with_index(&self, hash: &VoltHash) -> Option<(usize, VoltBlock)> {
+        let chain = self.inner.chain.lock();
+        let index = chain.position(hash)?;
+        chain.consensus().block(hash).map(|b| (index, b.clone()))
+    }
+
+    /// Up to `max` chain steps from step `from`, and the total number of steps.
+    ///
+    /// This is the feed a light wallet scans. Appending the commitments of every step's
+    /// transactions in order reproduces each step's `sapling_root`.
+    pub fn chain_steps(&self, from: usize, max: usize) -> (usize, Vec<StepFeed>) {
+        let chain = self.inner.chain.lock();
+        let consensus = chain.consensus();
+        let steps = consensus
+            .step_views(from, max)
+            .into_iter()
+            .map(|view| {
+                let txs = view
+                    .accepted
+                    .iter()
+                    .filter_map(|hash| consensus.block_txs(hash))
+                    .flat_map(|batches| batches.iter().flatten())
+                    .filter_map(|tx| {
+                        let nullifiers = tx.nullifiers();
+                        let sapling_commitments = tx.sapling_commitment_bytes();
+                        (!nullifiers.is_empty() || !sapling_commitments.is_empty()).then(|| {
+                            StepTx {
+                                txid: tx.txid(),
+                                nullifiers,
+                                sapling_outputs: tx.sapling_output_data(),
+                                sapling_commitments,
+                            }
+                        })
+                    })
+                    .collect();
+                StepFeed {
+                    index: view.index,
+                    block: view.block,
+                    sapling_root: view.sapling_root,
+                    sapling_notes: view.sapling_notes,
+                    txs,
+                }
+            })
+            .collect();
+        (consensus.step_count(), steps)
+    }
+
+    /// Every Sapling note commitment in the blocks this node holds, in the order received.
+    ///
+    /// Devnet wallets read their notes from these. It scans the whole chain, so it is not for
+    /// consensus.
+    pub fn sapling_commitments(&self) -> Vec<[u8; 32]> {
+        let chain = self.inner.chain.lock();
+        let mut found = Vec::new();
+        for hash in chain.arrival_order() {
+            let Some(block) = chain.consensus().block(hash) else {
+                continue;
+            };
+            for raw in block.batches.iter().flat_map(|b| b.raw_txs()) {
+                if let Ok(tx) = self.inner.config.decoder.decode(raw) {
+                    found.extend(tx.sapling_commitment_bytes());
+                }
+            }
+        }
+        found
+    }
+
+    /// Whether this nullifier has been revealed on chain.
+    pub fn has_nullifier(&self, nullifier: &[u8; 32]) -> bool {
+        self.inner
+            .chain
+            .lock()
+            .consensus()
+            .utxos()
+            .has_nullifier(nullifier)
+    }
+
+    /// Finds a transaction by id: the hash of the block holding it and its raw bytes.
+    pub fn find_tx(&self, txid: &VoltHash) -> Option<(VoltHash, Vec<u8>)> {
+        let chain = self.inner.chain.lock();
+        for hash in chain.arrival_order().iter().rev() {
+            let Some(block) = chain.consensus().block(hash) else {
+                continue;
+            };
+            for raw in block.batches.iter().flat_map(|b| b.raw_txs()) {
+                if let Ok(tx) = self.inner.config.decoder.decode(raw) {
+                    if tx.txid() == *txid {
+                        return Some((*hash, raw.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Decodes a transaction with this node's decoder.
+    pub fn decode_tx(&self, raw: &[u8]) -> Option<Arc<dyn BatchableTx>> {
+        self.inner.config.decoder.decode(raw).ok()
+    }
+
+    /// The height a transaction submitted now would be mined at, and how many chain steps a
+    /// coinbase output must age before it can be spent.
+    pub fn spend_context(&self) -> (u32, u32) {
+        let chain = self.inner.chain.lock();
+        (
+            Inner::next_height(&chain).0,
+            self.inner.config.coinbase_maturity,
+        )
+    }
+
+    /// Every unspent output locked by `script` with its value and whether it can be spent in the
+    /// next block (a coinbase output has to age first).
+    pub fn spendable_for(
+        &self,
+        script: &zebra_chain::transparent::Script,
+    ) -> Vec<(zebra_chain::transparent::OutPoint, i64, bool)> {
+        let chain = self.inner.chain.lock();
+        let next = Inner::next_height(&chain).0;
+        let maturity = self.inner.config.coinbase_maturity;
+        let utxos = chain.consensus().utxos();
+        utxos
+            .unspent_for_script(script)
+            .into_iter()
+            .filter_map(|(outpoint, value)| {
+                let utxo = utxos.get(&outpoint)?;
+                let age = next.saturating_sub(utxo.height.0);
+                Some((outpoint, value, !utxo.from_coinbase || age >= maturity))
+            })
+            .collect()
+    }
+
+    /// The addresses this node's mining rewards are paid to.
+    pub fn miner_addresses(&self) -> &[Address] {
+        &self.inner.config.miner_addresses
+    }
+
     /// Returns the block with this hash, if known.
     pub fn block(&self, hash: &VoltHash) -> Option<VoltBlock> {
         self.inner.chain.lock().consensus().block(hash).cloned()
@@ -368,11 +582,66 @@ impl Node {
         Ok(txid)
     }
 
+    /// An unmined block on the current tips, paying `miners`, and the RandomX key to mine it
+    /// under. The mempool is left alone: its transactions leave only when a block holding them
+    /// is accepted. This is what a stratum miner is given.
+    pub fn mining_template(
+        &self,
+        miners: &[zebra_chain::transparent::Address],
+    ) -> Result<(VoltBlock, [u8; 32])> {
+        let config = &self.inner.config;
+        let chain = self.inner.chain.lock();
+        let consensus = chain.consensus();
+        let ctx = consensus.template_context();
+        let txs = self
+            .inner
+            .mempool
+            .lock()
+            .best_batches(config.batches_per_block);
+        let (batches, _) = Consensus::pack_batches(&txs)?;
+        let template = consensus.build_template(
+            &ctx,
+            batches,
+            miners,
+            (config.mining_clock)().max(ctx.min_timestamp_ms),
+        )?;
+        Ok((template, ctx.seed))
+    }
+
+    /// The proof-of-work function this node verifies with.
+    pub fn pow(&self) -> Arc<dyn PowHasher> {
+        self.inner.config.pow.clone()
+    }
+
+    /// Submits a block somebody else found, and announces it to peers.
+    pub fn submit_found_block(&self, block: VoltBlock) -> Result<VoltHash> {
+        let accepted = {
+            let mut chain = self.inner.chain.lock();
+            let outcome = chain.submit_block(block, now_ms())?;
+            if let Some(report) = &outcome.chain {
+                self.inner.forget_mined(&chain, &report.accepted);
+            }
+            outcome.hash
+        };
+        self.p2p.announce_block(accepted);
+        Ok(accepted)
+    }
+
     /// Mines one block on top of the current tips, submits it and announces it.
     ///
     /// The consensus lock is not held while searching for a nonce, so the node keeps processing
     /// peers' blocks meanwhile. Returns `None` if no nonce was found within `max_attempts`.
     pub fn mine_one(&self, max_attempts: u64) -> Result<Option<VoltHash>> {
+        self.mine_one_to(None, max_attempts)
+    }
+
+    /// Like [`Node::mine_one`], but the reward goes to `miners` instead of this node's own
+    /// addresses when they are given.
+    pub fn mine_one_to(
+        &self,
+        miners: Option<&[zebra_chain::transparent::Address]>,
+        max_attempts: u64,
+    ) -> Result<Option<VoltHash>> {
         let config = &self.inner.config;
 
         let (template, seed) = {
@@ -388,16 +657,18 @@ impl Node {
             let template = consensus.build_template(
                 &ctx,
                 batches,
-                &config.miner_addresses,
+                miners.unwrap_or(&config.miner_addresses),
                 (config.mining_clock)().max(ctx.min_timestamp_ms),
             )?;
             (template, ctx.seed)
         };
 
         let mut block = template;
+        let commitment = block.header.pow_commitment();
         for nonce in 0..max_attempts {
             block.header.nonce = nonce;
-            let hash = config.pow.pow_hash(&seed, &block.header.encode())?;
+            let blob = volt_core::pow_blob_for(&commitment, nonce);
+            let hash = config.pow.pow_hash(&seed, &blob)?;
             if meets_target(&hash, block.header.bits) {
                 let accepted = {
                     let mut chain = self.inner.chain.lock();

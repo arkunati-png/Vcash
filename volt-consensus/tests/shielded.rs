@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use volt_consensus::{difficulty, Consensus, ConsensusConfig, TemplateContext};
 use volt_core::{BatchableTx, DevTx, DevTxDecoder, Economics, VoltBlock, VoltHash};
-use volt_crypto::Blake2bPowHasher;
+use volt_crypto::RandomXEngine;
 use volt_state::{ShieldedError, StateError};
 use zebra_chain::{
     amount::Amount,
@@ -21,8 +21,8 @@ const SHIELDED_FEE: i64 = 20_000;
 
 fn new_consensus() -> Consensus {
     Consensus::new(
-        Consensus::genesis_block(0),
-        Arc::new(Blake2bPowHasher),
+        Consensus::test_genesis_block(0),
+        RandomXEngine::shared(),
         Arc::new(DevTxDecoder),
         ConsensusConfig::devnet().with_economics(Economics::fifty_fifty()),
     )
@@ -70,7 +70,7 @@ fn push(
     ts: &mut u64,
     txs: Vec<Arc<dyn BatchableTx>>,
 ) -> (VoltHash, volt_consensus::SubmitOutcome) {
-    *ts += 500;
+    *ts += 850;
     let tip = c.sink();
     let block = mine_block(c, &[tip], txs, *ts);
     let hash = block.hash();
@@ -246,7 +246,7 @@ fn a_transaction_cannot_spend_a_note_created_in_its_own_step() {
     // Y and Z are siblings on the same tips, so one chain step merges both. Whichever of them is
     // applied first, the root Y produces is not a valid anchor until that step is sealed.
     let tips = c.dag().select_parents();
-    ts += 500;
+    ts += 850;
     let y = mine_block(
         &c,
         &tips,
@@ -264,7 +264,7 @@ fn a_transaction_cannot_spend_a_note_created_in_its_own_step() {
 
     let tips = c.dag().select_parents();
     assert_eq!(tips.len(), 2, "Y and Z are parallel tips");
-    ts += 500;
+    ts += 850;
     let merge = mine_block(&c, &tips, vec![], ts + 2);
     let outcome = c.submit_block(merge, ts + 2).unwrap();
     let report = outcome.chain.unwrap();
@@ -374,7 +374,7 @@ fn a_reorg_restores_the_trees_pools_and_anchors_exactly() {
     let accepted_before = c.accepted_blocks();
 
     // Branch A: a block that shields, then one that merges it.
-    ts += 500;
+    ts += 850;
     let a1 = mine_block(
         &c,
         &[base],
@@ -383,7 +383,7 @@ fn a_reorg_restores_the_trees_pools_and_anchors_exactly() {
     );
     let a1_hash = a1.hash();
     c.submit_block(a1, ts).unwrap();
-    ts += 500;
+    ts += 850;
     let a2 = mine_block(&c, &[a1_hash], vec![], ts);
     c.submit_block(a2, ts).unwrap();
 
@@ -396,7 +396,7 @@ fn a_reorg_restores_the_trees_pools_and_anchors_exactly() {
     let mut tip = base;
     let mut reorgs = 0;
     for _ in 0..4 {
-        ts += 500;
+        ts += 850;
         let block = mine_block(&c, &[tip], vec![], ts);
         tip = block.hash();
         let outcome = c.submit_block(block, ts).unwrap();

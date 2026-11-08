@@ -16,31 +16,10 @@ pub enum PowError {
 
 /// A proof-of-work hash function keyed by a 32-byte seed.
 ///
-/// For RandomX the seed is the cache key, which rotates every epoch.
+/// The seed is the RandomX cache key, which rotates every `POW_KEY_EPOCH_LENGTH` blocks.
 pub trait PowHasher: Send + Sync {
     /// Hashes `input` under `seed`.
     fn pow_hash(&self, seed: &[u8; 32], input: &[u8]) -> Result<[u8; 32], PowError>;
-}
-
-/// A Blake2b-256 stand-in for RandomX, for tests and fast devnets.
-///
-/// It is **not** CPU-hard and must never be used on a public network.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Blake2bPowHasher;
-
-impl PowHasher for Blake2bPowHasher {
-    fn pow_hash(&self, seed: &[u8; 32], input: &[u8]) -> Result<[u8; 32], PowError> {
-        let hash = blake2b_simd::Params::new()
-            .hash_length(32)
-            .personal(b"VoltTestPoW_____")
-            .to_state()
-            .update(seed)
-            .update(input)
-            .finalize();
-        let mut out = [0; 32];
-        out.copy_from_slice(hash.as_bytes());
-        Ok(out)
-    }
 }
 
 /// Returns `true` if `hash` is at or below the target encoded by compact `bits`.
@@ -55,6 +34,18 @@ pub fn meets_target(hash: &[u8; 32], bits: u32) -> bool {
         Some(target) => target >= block::Hash(*hash),
         None => false,
     }
+}
+
+/// The top 64 bits of the target encoded by compact `bits`, as stratum miners compare them.
+///
+/// A hash whose top 64 bits (its last eight bytes, little-endian) are below this meets the
+/// target, which is what XMRig checks before it reports a share.
+pub fn target_top64(bits: u32) -> Option<u64> {
+    use zebra_chain::serialization::BytesInDisplayOrder;
+    let compact = CompactDifficulty::from_bytes_in_display_order(&bits.to_be_bytes()).ok()?;
+    let target = compact.to_expanded()?;
+    let bytes = target.bytes_in_serialized_order();
+    Some(u64::from_be_bytes(bytes[..8].try_into().ok()?))
 }
 
 /// Returns the expected work to meet the target encoded by compact `bits`, if `bits` is valid.
@@ -80,15 +71,6 @@ mod tests {
             "negative bits are invalid"
         );
         assert!(!meets_target(&[0; 32], 0), "zero bits are invalid");
-    }
-
-    #[test]
-    fn blake2b_hasher_is_seeded_and_deterministic() {
-        let h = Blake2bPowHasher;
-        let a = h.pow_hash(&[1; 32], b"x").unwrap();
-        assert_eq!(a, h.pow_hash(&[1; 32], b"x").unwrap());
-        assert_ne!(a, h.pow_hash(&[2; 32], b"x").unwrap());
-        assert_ne!(a, h.pow_hash(&[1; 32], b"y").unwrap());
     }
 
     #[test]

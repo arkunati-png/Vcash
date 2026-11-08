@@ -9,7 +9,7 @@ use std::sync::Arc;
 use volt_core::{
     constants::{
         MAX_BATCHES_PER_BLOCK, MAX_BLOCK_ACTIONS, MAX_BLOCK_PARENTS, MAX_BLOCK_TX_BYTES,
-        MAX_FUTURE_TIMESTAMP_DRIFT_MS, POW_LIMIT_BITS,
+        MAX_FUTURE_TIMESTAMP_DRIFT_MS, TEST_POW_LIMIT_BITS,
     },
     BatchableTx, Economics, TxDecoder, VoltBlock,
 };
@@ -85,8 +85,12 @@ impl BlockValidator {
         if !block.coinbase.payouts.is_empty() || !block.coinbase.pol_contribution.is_zero() {
             return Err(invalid("genesis pays out"));
         }
-        if block.header.bits != POW_LIMIT_BITS {
-            return Err(invalid("genesis must use the PoW limit"));
+        // The genesis target is the network's PoW limit. It must be a real target, and no easier
+        // than the test limit, which the difficulty arithmetic is built to handle.
+        let limit = volt_crypto::target_work(block.header.bits);
+        let easiest = volt_crypto::target_work(TEST_POW_LIMIT_BITS);
+        if limit.is_none() || limit < easiest {
+            return Err(invalid("genesis has an invalid or too easy PoW limit"));
         }
         if block.header.coinbase_root != block.coinbase.hash() {
             return Err(ConsensusError::CommitmentMismatch("coinbase"));
@@ -169,7 +173,7 @@ impl BlockValidator {
 
         // Proof of work: the cheap checks above run first, so spam fails before hashing.
         let seed = pow_seed(dag, &selected_parent);
-        let pow_hash = self.pow.pow_hash(&seed, &header.encode())?;
+        let pow_hash = self.pow.pow_hash(&seed, &header.pow_blob())?;
         if !meets_target(&pow_hash, header.bits) {
             return Err(ConsensusError::InsufficientPow);
         }

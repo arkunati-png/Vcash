@@ -2,10 +2,10 @@
 //!
 //! ```text
 //! volt-node run [--data-dir DIR] [--listen ADDR] [--seed ADDR]... [--mine] [--blocks N]
-//!               [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]
-//!               [--pow blake2b|randomx] [--real-txs] [--payout ADDR]...
-//! volt-node sim [--blocks ROUNDS] [--miners N] [--batches PER_BLOCK] [--pow blake2b|randomx]
-//!               [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]
+//!               [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty|faucet] [--maturity STEPS]
+//!               [--easy-pow] [--verify-all] [--real-txs] [--rpc ADDR] [--stratum ADDR] [--payout ADDR]...
+//! volt-node sim [--blocks ROUNDS] [--miners N] [--batches PER_BLOCK]
+//!               [--economics mainnet|tapered|fifty-fifty|faucet] [--maturity STEPS]
 //! ```
 //!
 //! `run` starts a persistent node that talks to other nodes over TCP. `sim` runs several miners
@@ -16,20 +16,22 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use anyhow::{bail, Context, Result};
 use tracing::{info, warn};
 use volt_core::Economics;
-use volt_crypto::{Blake2bPowHasher, PowHasher};
+use volt_crypto::{PowHasher, RandomXEngine};
 use volt_node::{
     node::{Node, NodeConfig},
-    sim::{self, PowKind, SimConfig},
+    rpc,
+    sim::{self, SimConfig},
+    stratum,
 };
 use zebra_chain::{parameters::NetworkKind, transparent::Address};
 
 const SIM_USAGE: &str =
     "usage: volt-node sim [--blocks ROUNDS] [--miners N] [--batches PER_BLOCK] \
-     [--pow blake2b|randomx] [--economics mainnet|tapered|fifty-fifty] [--maturity STEPS]";
+     [--economics mainnet|tapered|fifty-fifty|faucet] [--maturity STEPS]";
 
 const RUN_USAGE: &str = "usage: volt-node run [--data-dir DIR] [--listen ADDR] [--seed ADDR]... \
-     [--mine] [--blocks N] [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty] \
-     [--maturity STEPS] [--pow blake2b|randomx] [--real-txs] [--payout ADDR]...";
+     [--mine] [--blocks N] [--batches N] [--name TAG] [--economics mainnet|tapered|fifty-fifty|faucet] \
+     [--maturity STEPS] [--easy-pow] [--real-txs] [--payout ADDR]...";
 
 /// Pulls the value that follows a flag.
 fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
@@ -41,18 +43,8 @@ fn economics(name: &str) -> Result<Economics> {
         "mainnet" => Ok(Economics::mainnet()),
         "tapered" => Ok(Economics::tapered()),
         "fifty-fifty" => Ok(Economics::fifty_fifty()),
+        "faucet" => Ok(Economics::faucet()),
         other => bail!("unknown --economics {other}"),
-    }
-}
-
-fn pow_kind(name: &str) -> Result<PowKind> {
-    match name {
-        "blake2b" => Ok(PowKind::Blake2b),
-        #[cfg(feature = "randomx")]
-        "randomx" => Ok(PowKind::RandomX),
-        #[cfg(not(feature = "randomx"))]
-        "randomx" => bail!("this build has no RandomX: rebuild with --features randomx"),
-        other => bail!("unknown --pow {other}"),
     }
 }
 
@@ -68,7 +60,6 @@ fn parse_sim(args: Vec<String>) -> Result<SimConfig> {
             "--batches" => {
                 config.batches_per_block = value(&mut args, &flag)?.parse().context("--batches")?;
             }
-            "--pow" => config.pow = pow_kind(&value(&mut args, &flag)?)?,
             "--economics" => config.economics = economics(&value(&mut args, &flag)?)?,
             "--maturity" => {
                 config.coinbase_maturity =
@@ -88,7 +79,7 @@ fn run_sim(args: Vec<String>) -> Result<()> {
     let config = parse_sim(args)?;
     info!(
         ?config,
-        "starting Voltcash devnet: GHOSTDAG k=32, 500 ms blocks, 10-to-1 batches"
+        "starting Voltcash devnet: GHOSTDAG k=32, 850 ms blocks, 10-to-1 batches"
     );
 
     let report = sim::run(config)?;
@@ -138,8 +129,15 @@ struct RunArgs {
     tag: u8,
     economics: Economics,
     maturity: Option<u32>,
-    pow: PowKind,
+    /// Use the easy test target (still RandomX). A different network from the production one.
+    easy_pow: bool,
+    /// Check every block's work and every proof again when reading the block log on start.
+    verify_all: bool,
     real_txs: bool,
+    /// Where the devnet wallet service listens, if enabled.
+    rpc: Option<SocketAddr>,
+    /// Where the stratum (XMRig) server listens, if enabled.
+    stratum: Option<SocketAddr>,
     /// Voltcash transparent addresses that mined rewards are paid to. Empty means the devnet
     /// placeholder addresses.
     payouts: Vec<Address>,
@@ -156,8 +154,11 @@ fn parse_run(args: Vec<String>) -> Result<RunArgs> {
         tag: 1,
         economics: Economics::mainnet(),
         maturity: None,
-        pow: PowKind::Blake2b,
+        easy_pow: false,
+        verify_all: false,
         real_txs: false,
+        rpc: None,
+        stratum: None,
         payouts: Vec::new(),
     };
     let mut args = args.into_iter();
@@ -180,8 +181,13 @@ fn parse_run(args: Vec<String>) -> Result<RunArgs> {
             "--maturity" => {
                 run.maturity = Some(value(&mut args, &flag)?.parse().context("--maturity")?);
             }
-            "--pow" => run.pow = pow_kind(&value(&mut args, &flag)?)?,
+            "--easy-pow" => run.easy_pow = true,
+            "--verify-all" => run.verify_all = true,
             "--real-txs" => run.real_txs = true,
+            "--rpc" => run.rpc = Some(value(&mut args, &flag)?.parse().context("--rpc")?),
+            "--stratum" => {
+                run.stratum = Some(value(&mut args, &flag)?.parse().context("--stratum")?);
+            }
             "--payout" => {
                 let text = value(&mut args, &flag)?;
                 let hash = volt_params::transparent::decode_p2pkh(&text)
@@ -208,14 +214,10 @@ fn parse_run(args: Vec<String>) -> Result<RunArgs> {
     Ok(run)
 }
 
-fn pow_hasher(kind: PowKind) -> Result<Arc<dyn PowHasher>> {
-    Ok(match kind {
-        PowKind::Blake2b => Arc::new(Blake2bPowHasher),
-        #[cfg(feature = "randomx")]
-        PowKind::RandomX => Arc::new(
-            volt_crypto::RandomXEngine::new().context("could not start the RandomX engine")?,
-        ),
-    })
+fn pow_hasher() -> Result<Arc<dyn PowHasher>> {
+    Ok(Arc::new(
+        RandomXEngine::new().context("could not start the RandomX engine")?,
+    ))
 }
 
 fn miner_addresses(tag: u8) -> Vec<Address> {
@@ -231,16 +233,28 @@ fn miner_addresses(tag: u8) -> Vec<Address> {
 
 fn run_node(args: Vec<String>) -> Result<()> {
     let run = parse_run(args)?;
+    if run.easy_pow {
+        warn!(
+            "EASY PROOF OF WORK: blocks take about 8 RandomX hashes instead of about 512. \
+             This is a test network and cannot be joined by a node without --easy-pow."
+        );
+    }
 
     let mut config = NodeConfig::devnet(
         run.data_dir.clone(),
-        pow_hasher(run.pow)?,
+        pow_hasher()?,
         if run.payouts.is_empty() {
             miner_addresses(run.tag)
         } else {
             run.payouts.clone()
         },
     );
+    if run.easy_pow {
+        config = config.with_easy_pow();
+    }
+    if run.verify_all {
+        config.replay = volt_storage::ReplayMode::Full;
+    }
     config.p2p.listen = run.listen;
     config.p2p.seeds = run.seeds.clone();
     config.economics = run.economics;
@@ -275,6 +289,12 @@ fn run_node(args: Vec<String>) -> Result<()> {
     runtime.block_on(async move {
         let node = Arc::new(Node::start(config).await?);
         info!(addr = %node.local_addr(), "node running");
+        if let Some(rpc) = run.rpc {
+            rpc::start(node.clone(), rpc, !run.real_txs)?;
+        }
+        if let Some(stratum) = run.stratum {
+            stratum::start(node.clone(), stratum)?;
+        }
 
         let miner = run.mine.then(|| {
             let node = node.clone();

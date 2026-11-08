@@ -67,15 +67,15 @@ impl Economics {
     ///
     /// - 0.05 VOLT per block, halving yearly (63,072,000 blocks at 2 per second), with a
     ///   0.001 VOLT tail;
-    /// - a flat 60% of every reward to miners and 40% locked as protocol-owned liquidity, from
+    /// - a flat 80% of every reward to miners and 20% locked as protocol-owned liquidity, from
     ///   the first block.
     pub const fn mainnet() -> Self {
         Self {
             initial_emission: VOLT / 20,
             tail_emission: VOLT / 1_000,
             halving_interval: 63_072_000,
-            miner_share_start_bps: 6_000,
-            miner_share_end_bps: 6_000,
+            miner_share_start_bps: 8_000,
+            miner_share_end_bps: 8_000,
             miner_share_step_bps: 0,
             miner_share_taper_interval: u64::MAX,
             min_payout: 10_000,
@@ -107,6 +107,16 @@ impl Economics {
             miner_share_step_bps: 0,
             miner_share_taper_interval: u64::MAX,
             min_payout: 10_000,
+        }
+    }
+
+    /// A devnet schedule for funding test wallets: 100 VOLT per block, split exactly 50/50, so a
+    /// miner earns 50 VOLT per block and 20 blocks pay 1,000 VOLT. Never use it on a real network.
+    pub const fn faucet() -> Self {
+        Self {
+            initial_emission: 100 * VOLT,
+            tail_emission: 100 * VOLT,
+            ..Self::fifty_fifty()
         }
     }
 
@@ -156,6 +166,14 @@ impl Economics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn faucet_pays_a_miner_fifty_volt_per_block() {
+        let e = Economics::faucet();
+        assert_eq!(e.emission(0), 100 * VOLT);
+        assert_eq!(e.emission(u64::MAX - 1), 100 * VOLT);
+        assert_eq!(e.split(e.emission(7), 7).unwrap(), (50 * VOLT, 50 * VOLT));
+    }
 
     #[test]
     fn emission_halves_and_floors_at_the_tail() {
@@ -219,15 +237,15 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_pays_miners_a_flat_60_percent() {
+    fn mainnet_pays_miners_a_flat_80_percent() {
         let e = Economics::mainnet();
         for score in [0, 1, 63_072_000, u64::MAX] {
-            assert_eq!(e.miner_share_bps(score), 6_000);
+            assert_eq!(e.miner_share_bps(score), 8_000);
         }
-        assert_eq!(e.split(1_000_000, 0).unwrap(), (600_000, 400_000));
+        assert_eq!(e.split(1_000_000, 0).unwrap(), (800_000, 200_000));
         // The miner part rounds down, so the remainder goes to the reserve.
-        assert_eq!(e.split(11, 0).unwrap(), (6, 5));
-        assert_eq!(e.split(1_001, 0).unwrap(), (600, 401));
+        assert_eq!(e.split(11, 0).unwrap(), (8, 3));
+        assert_eq!(e.split(1_001, 0).unwrap(), (800, 201));
         // An odd reward is fine away from exactly 50%.
         assert!(e.split(5_000_001, 0).is_ok());
     }

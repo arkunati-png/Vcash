@@ -9,6 +9,10 @@ rustdocflags = [
     "-Arustdoc::private_intra_doc_links",
 ]
 
+# RandomX is C++. The GNU Windows toolchain does not link the C++ runtime on its own.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-lstdc++"]
+
 [env]
 RUST_BACKTRACE="1"
 

@@ -47,6 +47,27 @@ struct ChainStep {
     shielded_before: Option<ShieldedSnapshot>,
     /// The anchors this step added when it was sealed.
     seal: StepSeal,
+    /// The Sapling tree root and note count at the end of this step.
+    sapling_root: [u8; 32],
+    sapling_notes: u64,
+}
+
+/// What a light wallet needs to know about one chain step.
+///
+/// A wallet that appends the Sapling note commitments of the accepted blocks, in the order given
+/// here, arrives at exactly `sapling_root` after `sapling_notes` notes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StepView {
+    /// The step's position in the chain. Genesis is step 0.
+    pub index: usize,
+    /// The chain block that closes the step.
+    pub block: VoltHash,
+    /// The blocks accepted in this step, in the order their transactions were applied.
+    pub accepted: Vec<VoltHash>,
+    /// The Sapling note commitment tree root after the step.
+    pub sapling_root: [u8; 32],
+    /// The number of Sapling notes in the tree after the step.
+    pub sapling_notes: u64,
 }
 
 /// A summary of a [`ChainState::advance`] call.
@@ -108,6 +129,8 @@ impl ChainState {
                 completed_epochs: Vec::new(),
                 shielded_before: None,
                 seal: StepSeal::default(),
+                sapling_root: ShieldedState::new().sapling_root(),
+                sapling_notes: 0,
             }],
             finalized_steps: 1, // the genesis step
             accepted_blocks: 0,
@@ -145,6 +168,28 @@ impl ChainState {
     /// The number of blocks accepted into state (genesis excluded).
     pub fn accepted_blocks(&self) -> u64 {
         self.accepted_blocks
+    }
+
+    /// The number of chain steps, genesis included.
+    pub fn step_count(&self) -> usize {
+        self.steps.len()
+    }
+
+    /// Up to `max` steps starting at step `from`, for a wallet to scan.
+    pub fn step_views(&self, from: usize, max: usize) -> Vec<StepView> {
+        self.steps
+            .iter()
+            .enumerate()
+            .skip(from)
+            .take(max)
+            .map(|(index, step)| StepView {
+                index,
+                block: step.block,
+                accepted: step.accepted.clone(),
+                sapling_root: step.sapling_root,
+                sapling_notes: step.sapling_notes,
+            })
+            .collect()
     }
 
     /// The number of chain steps that are final.
@@ -242,6 +287,8 @@ impl ChainState {
             completed_epochs: Vec::new(),
             shielded_before: Some(self.shielded.snapshot()),
             seal: StepSeal::default(),
+            sapling_root: [0; 32],
+            sapling_notes: 0,
         };
 
         for member in dag.ordered_mergeset(&chain_block) {
@@ -321,6 +368,8 @@ impl ChainState {
 
         // The step is done: the trees' roots become valid anchors for later steps.
         step.seal = self.shielded.seal_step();
+        step.sapling_root = self.shielded.sapling_root();
+        step.sapling_notes = self.shielded.sapling_notes();
         self.steps.push(step);
         Ok(())
     }

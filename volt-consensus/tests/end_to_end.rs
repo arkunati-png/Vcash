@@ -10,7 +10,7 @@ use volt_core::{
     constants::{EPOCH_LENGTH, FINALITY_DEPTH},
     BatchableTx, DevTx, DevTxDecoder, Economics, Payout, RollupBatch, VoltBlock, VoltHash,
 };
-use volt_crypto::{meets_target, Blake2bPowHasher, PowHasher};
+use volt_crypto::{meets_target, PowHasher, RandomXEngine};
 use zebra_chain::{
     amount::Amount,
     parameters::NetworkKind,
@@ -29,8 +29,8 @@ fn new_consensus() -> Consensus {
 
 fn new_consensus_with(config: ConsensusConfig) -> Consensus {
     Consensus::new(
-        Consensus::genesis_block(0),
-        Arc::new(Blake2bPowHasher),
+        Consensus::test_genesis_block(0),
+        RandomXEngine::shared(),
         Arc::new(DevTxDecoder),
         config,
     )
@@ -73,7 +73,7 @@ fn mine_on(
 /// Mines and submits an empty block on the current tips, advancing the fake clock.
 fn extend(c: &mut Consensus, ts: &mut u64, miners: &[Address]) -> VoltBlock {
     let ctx = c.template_context();
-    *ts += 500;
+    *ts += 850;
     let block = mine_on(c, &ctx, vec![], miners, *ts);
     c.submit_block(block.clone(), *ts).unwrap();
     block
@@ -129,7 +129,7 @@ fn ten_to_one_batches_flow_through_the_dag_into_state() {
     );
 
     let ctx = c.template_context();
-    ts += 500;
+    ts += 850;
     let b4 = mine_on(&c, &ctx, batches, &m, ts);
     // The reward is emission + fees, split exactly in half.
     let paid: i64 = b4
@@ -178,14 +178,14 @@ fn parallel_blocks_double_spending_resolve_deterministically() {
     };
     let (p, p_txs) = make(&c, 1_000, 50);
     let (q, q_txs) = make(&c, 2_000, 90);
-    ts += 500;
+    ts += 850;
     c.submit_block(p.clone(), ts).unwrap();
     c.submit_block(q.clone(), ts).unwrap();
 
     // Both are valid DAG blocks. A block merging both must accept exactly one of them.
     let merge_ctx = c.template_context();
     assert_eq!(merge_ctx.parents.len(), 2);
-    ts += 500;
+    ts += 850;
     let merge = mine_on(&c, &merge_ctx, vec![], &m, ts);
     let outcome = c.submit_block(merge, ts).unwrap();
     assert_eq!((outcome.merged_blues, outcome.merged_reds), (2, 0));
@@ -220,7 +220,7 @@ fn a_heavier_branch_reorgs_state() {
     let mut a_blocks = vec![];
     for _ in 0..3 {
         let ctx = ctx_on(&c, &[tip]);
-        ts += 500;
+        ts += 850;
         let block = mine_on(&c, &ctx, vec![], &miners(1, 10), ts);
         tip = block.hash();
         c.submit_block(block.clone(), ts).unwrap();
@@ -236,7 +236,7 @@ fn a_heavier_branch_reorgs_state() {
     let (mut reverted, mut accepted, mut is_sink) = (0, 0, false);
     for _ in 0..4 {
         let ctx = ctx_on(&c, &[tip]);
-        ts += 500;
+        ts += 850;
         let block = mine_on(&c, &ctx, vec![], &miners(1, 20), ts);
         tip = block.hash();
         let outcome = c.submit_block(block, ts).unwrap();
@@ -357,8 +357,8 @@ fn rejects_unmined_blocks() {
     let mut bad = template;
     for nonce in 0.. {
         bad.header.nonce = nonce;
-        let hash = Blake2bPowHasher
-            .pow_hash(&ctx.seed, &bad.header.encode())
+        let hash = RandomXEngine::shared()
+            .pow_hash(&ctx.seed, &bad.header.pow_blob())
             .unwrap();
         if !meets_target(&hash, bad.header.bits) {
             break;
@@ -452,7 +452,7 @@ fn rejects_wrong_difficulty_and_tampered_commitments() {
 
 #[test]
 fn the_engine_enforces_the_miner_share() {
-    // Production economics: miners get a flat 60%, the rest is locked as POL.
+    // Production economics: miners get a flat 80%, the rest is locked as POL.
     let mut c = new_consensus_with(ConsensusConfig::devnet());
     let ctx = c.template_context();
     let block = mine_on(&c, &ctx, vec![], &miners(5, 1), 500);
@@ -463,14 +463,14 @@ fn the_engine_enforces_the_miner_share() {
         .iter()
         .map(|p| p.amount.zatoshis())
         .sum();
-    assert_eq!(paid, BASE_EMISSION_PER_BLOCK * 6 / 10);
+    assert_eq!(paid, BASE_EMISSION_PER_BLOCK * 8 / 10);
     assert_eq!(
         block.coinbase.pol_contribution.zatoshis(),
-        BASE_EMISSION_PER_BLOCK * 4 / 10
+        BASE_EMISSION_PER_BLOCK * 2 / 10
     );
     c.submit_block(block, 1_000).unwrap();
 
-    // A miner who deviates from the 60/40 schedule (paying itself too little, or
+    // A miner who deviates from the 80/20 schedule (paying itself too little, or
     // POL too much) is off schedule and rejected.
     let ctx = c.template_context();
     let mut wrong = c
@@ -534,7 +534,7 @@ fn coinbase_outputs_cannot_be_spent_until_they_mature() {
     let txs = spend_all(&b1, 0);
     let (batches, _) = Consensus::pack_batches(&txs).unwrap();
     let ctx = c.template_context();
-    ts += 500;
+    ts += 850;
     let early = mine_on(&c, &ctx, batches, &m, ts);
     c.submit_block(early, ts).unwrap();
     let merged = extend(&mut c, &mut ts, &m);
@@ -552,7 +552,7 @@ fn coinbase_outputs_cannot_be_spent_until_they_mature() {
     let txs = spend_all(&b1, 10_000);
     let (batches, _) = Consensus::pack_batches(&txs).unwrap();
     let ctx = c.template_context();
-    ts += 500;
+    ts += 850;
     let late = mine_on(&c, &ctx, batches, &m, ts);
     c.submit_block(late, ts).unwrap();
     extend(&mut c, &mut ts, &m);

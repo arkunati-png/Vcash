@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use tracing::{debug, warn};
 use volt_core::{
-    constants::{COINBASE_MATURITY, POW_LIMIT_BITS},
+    constants::{COINBASE_MATURITY, POW_LIMIT_BITS, TEST_POW_LIMIT_BITS},
     BatchableTx, Coinbase, Economics, NoVerification, RollupBatch, TxDecoder, TxVerifier,
     VoltBlock, VoltHash, VoltHeader,
 };
@@ -115,8 +115,20 @@ pub struct Consensus {
 }
 
 impl Consensus {
-    /// Builds the genesis block for a network started at `timestamp_ms`.
+    /// Builds the genesis block for a network started at `timestamp_ms`, at the production PoW
+    /// limit.
     pub fn genesis_block(timestamp_ms: u64) -> VoltBlock {
+        Self::genesis_block_with_limit(timestamp_ms, POW_LIMIT_BITS)
+    }
+
+    /// A genesis block for tests and local development chains, with the easy PoW limit. It is a
+    /// different network from the production one: the limit is part of the genesis hash.
+    pub fn test_genesis_block(timestamp_ms: u64) -> VoltBlock {
+        Self::genesis_block_with_limit(timestamp_ms, TEST_POW_LIMIT_BITS)
+    }
+
+    /// Builds a genesis block whose PoW limit (its `bits`) is `pow_limit_bits`.
+    pub fn genesis_block_with_limit(timestamp_ms: u64, pow_limit_bits: u32) -> VoltBlock {
         let coinbase = Coinbase {
             payouts: Vec::new(),
             pol_contribution: Amount::zero(),
@@ -127,7 +139,7 @@ impl Consensus {
                 version: 1,
                 parents: Vec::new(),
                 timestamp_ms,
-                bits: POW_LIMIT_BITS,
+                bits: pow_limit_bits,
                 nonce: 0,
                 batches_root: VoltBlock::compute_batches_root(&[]),
                 coinbase_root: coinbase.hash(),
@@ -220,6 +232,21 @@ impl Consensus {
             .blue_score
     }
 
+    /// The number of chain steps, genesis included.
+    pub fn step_count(&self) -> usize {
+        self.chain.step_count()
+    }
+
+    /// Up to `max` chain steps from step `from`: what a light wallet scans, in consensus order.
+    pub fn step_views(&self, from: usize, max: usize) -> Vec<crate::chain::StepView> {
+        self.chain.step_views(from, max)
+    }
+
+    /// The decoded transactions of a block's batches, in the order they were applied.
+    pub fn block_txs(&self, hash: &VoltHash) -> Option<&[Vec<Arc<dyn BatchableTx>>]> {
+        self.bodies.get(hash).map(|stored| stored.txs.as_slice())
+    }
+
     /// The block with the given hash, if known.
     pub fn block(&self, hash: &VoltHash) -> Option<&VoltBlock> {
         self.bodies.get(hash).map(|stored| &stored.block)
@@ -306,18 +333,19 @@ impl Consensus {
         }
     }
 
-    /// Packs transactions into 10-to-1 rollup batches, discarding any remainder.
+    /// Packs transactions into rollup batches of ten, with a smaller last batch for the rest.
     ///
-    /// Returns the batches and the number of transactions left over.
+    /// Returns the batches and the number of transactions left over, which is always zero now
+    /// that a batch may hold fewer than ten.
     pub fn pack_batches(
         txs: &[Arc<dyn BatchableTx>],
     ) -> Result<(Vec<RollupBatch>, usize), ConsensusError> {
         let size = volt_core::constants::BATCH_SIZE;
         let batches = txs
-            .chunks_exact(size)
+            .chunks(size)
             .map(RollupBatch::pack)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((batches, txs.len() % size))
+        Ok((batches, 0))
     }
 
     /// Builds an unmined block: the coinbase pays `miners` half of `emission + fees` and the
@@ -371,12 +399,11 @@ impl Consensus {
         start_nonce: u64,
         max_attempts: u64,
     ) -> Result<Option<VoltBlock>, ConsensusError> {
+        let commitment = block.header.pow_commitment();
         for attempt in 0..max_attempts {
             block.header.nonce = start_nonce.wrapping_add(attempt);
-            let hash = self
-                .validator
-                .pow()
-                .pow_hash(seed, &block.header.encode())?;
+            let blob = volt_core::pow_blob_for(&commitment, block.header.nonce);
+            let hash = self.validator.pow().pow_hash(seed, &blob)?;
             if meets_target(&hash, block.header.bits) {
                 return Ok(Some(block));
             }

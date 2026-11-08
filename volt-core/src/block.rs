@@ -105,10 +105,48 @@ impl VoltHeader {
         Ok(())
     }
 
+    /// A commitment to everything in the header except the nonce.
+    ///
+    /// Miners hash a fixed-size blob built from this and the nonce (see [`VoltHeader::pow_blob`]),
+    /// so a stratum miner such as XMRig can mine Voltcash without understanding its header.
+    pub fn pow_commitment(&self) -> [u8; 32] {
+        let mut header = self.clone();
+        header.nonce = 0;
+        VoltHash::digest(b"VoltPowCommit___", &header.encode()).0
+    }
+
+    /// The bytes the proof-of-work hash is taken over: [`POW_BLOB_LEN`] bytes laid out like a
+    /// Monero hashing blob, with the low 32 bits of the nonce where XMRig writes its nonce
+    /// ([`POW_NONCE_OFFSET`]) and the high 32 bits in the stratum extra-nonce slot before it.
+    ///
+    /// Only the commitment and the nonce are in it, so one hash covers the whole header.
+    pub fn pow_blob(&self) -> [u8; POW_BLOB_LEN] {
+        pow_blob_for(&self.pow_commitment(), self.nonce)
+    }
+
     /// The block hash: the Blake2b-256 digest of the encoded header.
     pub fn hash(&self) -> VoltHash {
         VoltHash::digest(b"VoltBlockHeader_", &self.encode())
     }
+}
+
+/// The length of the proof-of-work blob, the same as a Monero hashing blob.
+pub const POW_BLOB_LEN: usize = 76;
+
+/// Where a stratum miner writes its 4-byte nonce in the blob.
+pub const POW_NONCE_OFFSET: usize = 39;
+
+/// Where the pool-assigned 4-byte extra nonce goes in the blob: the high half of the header nonce.
+pub const POW_EXTRA_NONCE_OFFSET: usize = 32;
+
+/// Builds the proof-of-work blob for a header commitment and a full 64-bit nonce.
+pub fn pow_blob_for(commitment: &[u8; 32], nonce: u64) -> [u8; POW_BLOB_LEN] {
+    let mut blob = [0u8; POW_BLOB_LEN];
+    blob[..32].copy_from_slice(commitment);
+    blob[POW_EXTRA_NONCE_OFFSET..POW_EXTRA_NONCE_OFFSET + 4]
+        .copy_from_slice(&((nonce >> 32) as u32).to_le_bytes());
+    blob[POW_NONCE_OFFSET..POW_NONCE_OFFSET + 4].copy_from_slice(&(nonce as u32).to_le_bytes());
+    blob
 }
 
 /// One coinbase payout to a transparent address.

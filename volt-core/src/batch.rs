@@ -1,8 +1,9 @@
 //! The 10-to-1 rollup batch.
 //!
-//! A [`RollupBatch`] packs exactly [`BATCH_SIZE`] transactions into one payload, so the base
+//! A [`RollupBatch`] packs up to [`BATCH_SIZE`] transactions into one payload, so the base
 //! layer carries one compressed state transition instead of ten separate transactions and
-//! charges one block-space slot for them.
+//! charges one block-space slot for them. Miners fill batches to ten whenever they can; a quiet
+//! chain closes a smaller batch rather than leaving a lone transaction waiting forever.
 
 use std::{collections::HashSet, io::Read, io::Write, sync::Arc};
 
@@ -26,8 +27,8 @@ const TX_LEAF_PERSONAL: &[u8; 16] = b"VoltBatchTxLeaf_";
 /// Errors from building, decoding or checking a [`RollupBatch`].
 #[derive(Debug, Error, PartialEq, Clone)]
 pub enum BatchError {
-    /// The batch does not hold exactly [`BATCH_SIZE`] transactions.
-    #[error("a rollup batch must contain exactly {BATCH_SIZE} transactions, got {0}")]
+    /// The batch holds no transactions, or more than [`BATCH_SIZE`].
+    #[error("a rollup batch must contain 1 to {BATCH_SIZE} transactions, got {0}")]
     WrongSize(usize),
 
     /// A coinbase transaction was placed in a batch.
@@ -73,9 +74,9 @@ pub struct RollupBatch {
 }
 
 impl RollupBatch {
-    /// Packs exactly [`BATCH_SIZE`] transactions into a batch.
+    /// Packs 1 to [`BATCH_SIZE`] transactions into a batch.
     pub fn pack(txs: &[Arc<dyn BatchableTx>]) -> Result<Self, BatchError> {
-        if txs.len() != BATCH_SIZE {
+        if txs.is_empty() || txs.len() > BATCH_SIZE {
             return Err(BatchError::WrongSize(txs.len()));
         }
 
@@ -126,16 +127,16 @@ impl RollupBatch {
 
     /// Decodes and fully checks the batch: size, root, coinbases, duplicates and fees.
     pub fn unpack(&self, decoder: &dyn TxDecoder) -> Result<Vec<Arc<dyn BatchableTx>>, BatchError> {
-        if self.txs.len() != BATCH_SIZE {
+        if self.txs.is_empty() || self.txs.len() > BATCH_SIZE {
             return Err(BatchError::WrongSize(self.txs.len()));
         }
         if Self::root_of(&self.txs) != self.batch_root {
             return Err(BatchError::RootMismatch);
         }
 
-        let mut seen = HashSet::with_capacity(BATCH_SIZE);
+        let mut seen = HashSet::with_capacity(self.txs.len());
         let mut fees = Amount::<NonNegative>::zero();
-        let mut decoded = Vec::with_capacity(BATCH_SIZE);
+        let mut decoded = Vec::with_capacity(self.txs.len());
         for bytes in &self.txs {
             let tx = decoder.decode(bytes)?;
             if tx.is_coinbase() {
@@ -192,7 +193,7 @@ impl RollupBatch {
         let total_fees =
             Amount::<NonNegative>::try_from(r.i64()?).map_err(|_| BatchError::FeeOverflow)?;
         let n = r.count("batch transactions", BATCH_SIZE)?;
-        if n != BATCH_SIZE {
+        if n == 0 {
             return Err(BatchError::WrongSize(n));
         }
 
@@ -232,9 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn packs_exactly_ten() {
+    fn packs_one_to_ten() {
         assert!(RollupBatch::pack(&txs(10)).is_ok());
-        assert_eq!(RollupBatch::pack(&txs(9)), Err(BatchError::WrongSize(9)));
+        for n in [1, 3, 9] {
+            let batch = RollupBatch::pack(&txs(n)).unwrap();
+            let decoded = RollupBatch::decompress(&batch.compress()).unwrap();
+            assert_eq!(decoded.unpack(&DevTxDecoder).unwrap().len(), n);
+        }
+        assert_eq!(RollupBatch::pack(&txs(0)), Err(BatchError::WrongSize(0)));
         assert_eq!(RollupBatch::pack(&txs(11)), Err(BatchError::WrongSize(11)));
     }
 

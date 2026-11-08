@@ -84,6 +84,12 @@ pub trait BatchableTx: Send + Sync + std::fmt::Debug {
         Vec::new()
     }
 
+    /// The Sapling outputs this transaction creates, in tree order, with their encrypted notes.
+    /// Devnet transactions have no encrypted notes and return nothing.
+    fn sapling_output_data(&self) -> Vec<SaplingOutputData> {
+        Vec::new()
+    }
+
     /// The Orchard note commitments this transaction creates, in order.
     fn orchard_commitment_bytes(&self) -> Vec<[u8; 32]> {
         Vec::new()
@@ -112,6 +118,17 @@ pub trait BatchableTx: Send + Sync + std::fmt::Debug {
 
     /// Returns `self` as [`Any`], so a [`TxVerifier`] can recover the concrete transaction type.
     fn as_any(&self) -> &dyn Any;
+}
+
+/// A Sapling output as a light wallet needs it: enough to try to decrypt the note.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaplingOutputData {
+    /// The note commitment (`cmu`), as appended to the tree.
+    pub cmu: [u8; 32],
+    /// The ephemeral public key the note was encrypted to.
+    pub ephemeral_key: [u8; 32],
+    /// The 580-byte encrypted note: value, recipient details and the 512-byte memo.
+    pub enc_ciphertext: Vec<u8>,
 }
 
 /// Decodes transactions from batch payloads.
@@ -236,6 +253,16 @@ impl BatchableTx for Transaction {
     fn sapling_commitment_bytes(&self) -> Vec<[u8; 32]> {
         self.sapling_note_commitments()
             .map(|commitment| commitment.to_bytes())
+            .collect()
+    }
+
+    fn sapling_output_data(&self) -> Vec<SaplingOutputData> {
+        self.sapling_outputs()
+            .map(|output| SaplingOutputData {
+                cmu: output.cmu().to_bytes(),
+                ephemeral_key: output.ephemeral_key().0,
+                enc_ciphertext: output.enc_ciphertext().to_vec(),
+            })
             .collect()
     }
 

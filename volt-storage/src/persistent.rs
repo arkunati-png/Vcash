@@ -1,6 +1,13 @@
 //! A consensus engine whose blocks survive restarts.
 
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use thiserror::Error;
 use tracing::info;
@@ -9,6 +16,7 @@ use volt_core::{BlockError, TxDecoder, VoltBlock, VoltHash};
 use volt_crypto::PowHasher;
 
 use crate::log::{BlockLog, LogError, OpenReport, SyncPolicy};
+use crate::trust::{ReplayMode, ReplayPow, ReplayVerifier};
 
 /// Errors from a persistent engine.
 #[derive(Debug, Error)]
@@ -65,14 +73,41 @@ impl PersistentConsensus {
         config: ConsensusConfig,
         sync: SyncPolicy,
     ) -> Result<(Self, OpenReport), StorageError> {
+        Self::open_with(path, genesis, pow, decoder, config, sync, ReplayMode::Full)
+    }
+
+    /// Like [`PersistentConsensus::open`], with a choice of how much of the log to check again.
+    /// See [`ReplayMode`] for what a faster replay skips and what it keeps.
+    pub fn open_with(
+        path: impl AsRef<Path>,
+        genesis: VoltBlock,
+        pow: Arc<dyn PowHasher>,
+        decoder: Arc<dyn TxDecoder>,
+        mut config: ConsensusConfig,
+        sync: SyncPolicy,
+        mode: ReplayMode,
+    ) -> Result<(Self, OpenReport), StorageError> {
         let genesis_hash = genesis.hash();
         let (log, report) = BlockLog::open(path, &genesis_hash, sync)?;
+
+        // While the flag is set, the two expensive checks are skipped. It is cleared before the
+        // engine is handed back, so a block that arrives later is always checked in full.
+        let trusting = Arc::new(AtomicBool::new(false));
+        let pow: Arc<dyn PowHasher> = Arc::new(ReplayPow {
+            inner: pow,
+            trusting: trusting.clone(),
+        });
+        config.verifier = Arc::new(ReplayVerifier {
+            inner: config.verifier.clone(),
+            trusting: trusting.clone(),
+        });
         let mut consensus = Consensus::new(genesis, pow, decoder, config)?;
         let mut order = vec![genesis_hash];
         let mut positions = HashMap::from([(genesis_hash, 0)]);
 
         for (index, record) in log.records()?.enumerate() {
             let index = index as u64; // lossless: a usize index fits in u64
+            trusting.store(mode.trusts(index, report.records), Ordering::Relaxed);
             let block = VoltBlock::decode(&record?)
                 .map_err(|source| StorageError::BadRecord { index, source })?;
             // Replay has no wall clock: a block that was valid when stored stays valid, so the
@@ -84,7 +119,9 @@ impl PersistentConsensus {
             order.push(outcome.hash);
         }
 
+        trusting.store(false, Ordering::Relaxed);
         info!(
+            ?mode,
             records = report.records,
             truncated_bytes = report.truncated_bytes,
             blocks = consensus.dag().len(),

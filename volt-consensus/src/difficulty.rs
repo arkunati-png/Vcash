@@ -2,8 +2,7 @@
 
 use volt_core::{
     constants::{
-        DIFFICULTY_WINDOW, EPOCH_LENGTH, MAX_DIFFICULTY_STEP, POW_LIMIT_BITS,
-        TARGET_BLOCK_INTERVAL_MS,
+        DIFFICULTY_WINDOW, MAX_DIFFICULTY_STEP, POW_KEY_EPOCH_LENGTH, TARGET_BLOCK_INTERVAL_MS,
     },
     VoltHash,
 };
@@ -24,15 +23,18 @@ fn compact(target: ExpandedDifficulty) -> u32 {
     u32::from_be_bytes(target.to_compact().bytes_in_display_order())
 }
 
-/// The easiest allowed target.
-pub fn pow_limit() -> ExpandedDifficulty {
-    expand(POW_LIMIT_BITS).expect("the PoW limit constant is a valid compact target")
+/// The easiest allowed target: the target of the genesis block, which every node of a network
+/// agrees on because it is part of the genesis hash.
+pub fn pow_limit(dag: &BlockDag) -> ExpandedDifficulty {
+    let genesis = dag.genesis().expect("a DAG with blocks has a genesis");
+    let bits = dag.get(&genesis).expect("genesis is in the DAG").bits;
+    expand(bits).expect("the genesis block has a valid target")
 }
 
 /// The difficulty bits required of a block whose selected parent is `selected_parent`.
 ///
 /// The target is the average target over the last [`DIFFICULTY_WINDOW`] selected-chain blocks,
-/// scaled by how much slower or faster than 500 ms per blue block they were produced. Blocks are
+/// scaled by how much slower or faster than 850 ms per blue block they were produced. Blocks are
 /// counted by blue score, not chain length, so merged parallel blocks count as work done. Each
 /// step is clamped to [`MAX_DIFFICULTY_STEP`]x and the target never exceeds the PoW limit.
 pub fn next_bits(dag: &BlockDag, selected_parent: &VoltHash) -> u32 {
@@ -54,12 +56,14 @@ pub fn next_bits(dag: &BlockDag, selected_parent: &VoltHash) -> u32 {
         return newest.2;
     }
 
-    let limit = pow_limit();
-    let sum: ExpandedDifficulty = window
+    let limit = pow_limit(dag);
+    // Divide each target by the window size before adding, so the sum cannot overflow 256 bits
+    // even when every target is at the limit.
+    let n = window.len() as u64; // lossless: at most DIFFICULTY_WINDOW entries
+    let average: ExpandedDifficulty = window
         .iter()
-        .map(|(_, _, bits)| expand(*bits).unwrap_or(limit))
+        .map(|(_, _, bits)| expand(*bits).unwrap_or(limit) / n)
         .sum();
-    let average = sum / window.len() as u64; // lossless: at most DIFFICULTY_WINDOW entries
 
     let expected_ms = blue_blocks.saturating_mul(TARGET_BLOCK_INTERVAL_MS).max(1);
     let actual_ms = newest.1.saturating_sub(oldest.1).clamp(
@@ -67,7 +71,7 @@ pub fn next_bits(dag: &BlockDag, selected_parent: &VoltHash) -> u32 {
         expected_ms.saturating_mul(MAX_DIFFICULTY_STEP),
     );
 
-    // Divide first so the product stays below 2^256: the limit is ~2^247 and the factor is <= 4.
+    // Divide first so the product stays below 2^256: the limit is at most 2^253 and the factor is <= 4.
     let mut adjusted = average / expected_ms * actual_ms;
     if adjusted > limit {
         adjusted = limit;
@@ -81,21 +85,26 @@ pub fn next_bits(dag: &BlockDag, selected_parent: &VoltHash) -> u32 {
 
 /// The RandomX seed (cache key) for a block whose selected parent is `selected_parent`.
 ///
-/// The key changes once per [`EPOCH_LENGTH`] blue blocks and lags by one epoch: it is the hash of
+/// The key changes once per [`POW_KEY_EPOCH_LENGTH`] blue blocks and lags by one epoch: it is the hash of
 /// the selected-chain block at or below the start of the previous epoch. A miner therefore
 /// knows the next epoch's key a full epoch ahead of time and can prepare its RandomX cache.
 pub fn pow_seed(dag: &BlockDag, selected_parent: &VoltHash) -> [u8; 32] {
+    pow_seed_with_epoch(dag, selected_parent, POW_KEY_EPOCH_LENGTH)
+}
+
+/// [`pow_seed`] with the key period as a parameter, so tests can use a short one.
+fn pow_seed_with_epoch(dag: &BlockDag, selected_parent: &VoltHash, epoch_length: u64) -> [u8; 32] {
     let score = dag
         .get(selected_parent)
         .expect("the selected parent is in the DAG")
         .ghostdag
         .blue_score;
-    let epoch = score / EPOCH_LENGTH;
+    let epoch = score / epoch_length;
     if epoch == 0 {
         return dag.genesis().expect("a DAG with blocks has a genesis").0;
     }
 
-    let key_score = (epoch - 1) * EPOCH_LENGTH;
+    let key_score = (epoch - 1) * epoch_length;
     dag.selected_chain(selected_parent)
         .into_iter()
         .find(|hash| {
@@ -112,6 +121,7 @@ pub fn pow_seed(dag: &BlockDag, selected_parent: &VoltHash) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use volt_core::constants::POW_LIMIT_BITS;
 
     fn h(n: u32) -> VoltHash {
         let mut bytes = [0; 32];
@@ -119,10 +129,11 @@ mod tests {
         VoltHash(bytes)
     }
 
-    /// A linear chain of `n` blocks after genesis, `interval_ms` apart, all at `bits`.
+    /// A linear chain of `n` blocks after genesis, `interval_ms` apart, all at `bits`. Genesis
+    /// carries the production PoW limit, which is what bounds how easy the target can get.
     fn chain(n: u32, interval_ms: u64, bits: u32) -> (BlockDag, VoltHash) {
         let mut dag = BlockDag::default();
-        dag.add_genesis(h(0), 1, 0, bits).unwrap();
+        dag.add_genesis(h(0), 1, 0, POW_LIMIT_BITS).unwrap();
         for i in 1..=n {
             dag.add_block(h(i), &[h(i - 1)], 1, u64::from(i) * interval_ms, bits)
                 .unwrap();
@@ -164,7 +175,7 @@ mod tests {
     fn target_is_clamped_to_the_pow_limit_and_the_step() {
         // Very slow blocks at the limit cannot go easier than the limit.
         let (dag, tip) = chain(130, 60_000, POW_LIMIT_BITS);
-        assert!(target(next_bits(&dag, &tip)) <= pow_limit());
+        assert!(target(next_bits(&dag, &tip)) <= pow_limit(&dag));
 
         // Very fast blocks change the target by at most 4x per step.
         let bits = 0x1e7f_ffff;
@@ -175,13 +186,29 @@ mod tests {
     #[test]
     fn seed_is_genesis_in_the_first_epoch_then_lags() {
         let (dag, tip) = chain(5, 500, POW_LIMIT_BITS);
-        assert_eq!(pow_seed(&dag, &tip), h(0).0);
+        assert_eq!(pow_seed_with_epoch(&dag, &tip, 200), h(0).0);
 
         let (dag, tip) = chain(450, 500, POW_LIMIT_BITS);
         // blue score of block i is i, so at score 450 (epoch 2) the key is the block at score 200.
-        assert_eq!(pow_seed(&dag, &tip), h(200).0);
+        assert_eq!(pow_seed_with_epoch(&dag, &tip, 200), h(200).0);
         // Within an epoch the key does not change.
-        assert_eq!(pow_seed(&dag, &h(401)), pow_seed(&dag, &h(449)));
-        assert_ne!(pow_seed(&dag, &h(399)), pow_seed(&dag, &h(401)));
+        assert_eq!(
+            pow_seed_with_epoch(&dag, &h(401), 200),
+            pow_seed_with_epoch(&dag, &h(449), 200)
+        );
+        assert_ne!(
+            pow_seed_with_epoch(&dag, &h(399), 200),
+            pow_seed_with_epoch(&dag, &h(401), 200)
+        );
+    }
+
+    #[test]
+    fn the_real_key_period_is_long_enough_for_miners_to_rebuild_their_dataset() {
+        // About 62 hours at 850 ms. A key that changed every few minutes would make every
+        // miner rebuild a 2 GB dataset constantly.
+        let hours = POW_KEY_EPOCH_LENGTH as f64 * 0.85 / 3600.0;
+        assert!(hours > 24.0, "{hours}");
+        let (dag, tip) = chain(300, 500, POW_LIMIT_BITS);
+        assert_eq!(pow_seed(&dag, &tip), h(0).0, "still the first key");
     }
 }

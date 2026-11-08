@@ -24,13 +24,16 @@ pub mod hash;
 pub mod tx;
 
 pub use batch::{BatchError, RollupBatch};
-pub use block::{BlockError, Coinbase, Payout, VoltBlock, VoltHeader};
+pub use block::{
+    pow_blob_for, BlockError, Coinbase, Payout, VoltBlock, VoltHeader, POW_BLOB_LEN,
+    POW_EXTRA_NONCE_OFFSET, POW_NONCE_OFFSET,
+};
 pub use codec::CodecError;
 pub use dev_tx::{DevTx, DevTxDecoder};
 pub use economics::{Economics, EconomicsError};
 pub use fee::{calculate_tx_fee, fee_for, fee_for_kind};
 pub use hash::{merkle_root, VoltHash};
 pub use tx::{
-    BatchableTx, NoVerification, Nullifier, TxDecoder, TxKind, TxVerifier, TxVerifyItem,
-    VerifyError, ZebraTxDecoder,
+    BatchableTx, NoVerification, Nullifier, SaplingOutputData, TxDecoder, TxKind, TxVerifier,
+    TxVerifyItem, VerifyError, ZebraTxDecoder,
 };

@@ -15,7 +15,7 @@ use volt_core::{
 use zebra_chain::{
     block::Height,
     transaction,
-    transparent::{OutPoint, Output, Utxo},
+    transparent::{OutPoint, Output, Script, Utxo},
 };
 
 /// Errors from validating or applying transactions against the store.
@@ -184,6 +184,17 @@ impl RamUtxoStore {
     /// Returns a copy of the unspent output at `outpoint`.
     pub fn get(&self, outpoint: &OutPoint) -> Option<Utxo> {
         self.utxos.get(outpoint).map(|entry| entry.value().clone())
+    }
+
+    /// Every unspent output locked by exactly `script`, with its value in zatoshis.
+    ///
+    /// Scans the whole set, so it is for RPC and wallets on a devnet, not for consensus.
+    pub fn unspent_for_script(&self, script: &Script) -> Vec<(OutPoint, i64)> {
+        self.utxos
+            .iter()
+            .filter(|entry| entry.value().output.lock_script == *script)
+            .map(|entry| (*entry.key(), entry.value().output.value().zatoshis()))
+            .collect()
     }
 
     /// Whether `outpoint` is unspent.

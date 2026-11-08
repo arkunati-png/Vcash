@@ -13,11 +13,11 @@
 pub const COIN_TYPE: u32 = 22083;
 
 /// Bech32 prefix for Sapling payment addresses.
-pub const HRP_SAPLING_PAYMENT_ADDRESS: &str = "volts";
+pub const HRP_SAPLING_PAYMENT_ADDRESS: &str = "zv";
 /// Bech32m prefix for ZIP 320 TEX addresses.
 pub const HRP_TEX_ADDRESS: &str = "volttex";
 /// Bech32m prefix for revision 0 unified addresses.
-pub const HRP_UNIFIED_ADDRESS: &str = "volt";
+pub const HRP_UNIFIED_ADDRESS: &str = "z";
 /// Bech32m prefix for revision 0 unified full viewing keys.
 pub const HRP_UNIFIED_FVK: &str = "voltview";
 /// Bech32m prefix for revision 0 unified incoming viewing keys.
@@ -31,10 +31,10 @@ pub const HRP_UNIFIED_FVK_R2: &str = "voltvf";
 /// Bech32m prefix for revision 2 unified incoming viewing keys.
 pub const HRP_UNIFIED_IVK_R2: &str = "voltvi";
 
-/// Base58Check prefix for transparent P2PKH addresses. Every address starts with `Vo`.
-pub const B58_PUBKEY_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x37];
+/// Base58Check prefix for transparent P2PKH addresses. Every address starts with `tv`.
+pub const B58_PUBKEY_ADDRESS_PREFIX: [u8; 2] = [0x1d, 0x3b];
 /// Base58Check prefix for transparent P2SH addresses.
-pub const B58_SCRIPT_ADDRESS_PREFIX: [u8; 2] = [0x10, 0x3c];
+pub const B58_SCRIPT_ADDRESS_PREFIX: [u8; 2] = [0x1d, 0x3e];
 
 /// Voltcash has no activation schedule: every upgrade it supports (through NU6.3) is active from
 /// the first block. Ironwood and later upgrades are refused by consensus.
@@ -97,7 +97,7 @@ pub mod transparent {
         use super::*;
 
         #[test]
-        fn round_trips_and_always_starts_with_vo() {
+        fn round_trips_and_always_starts_with_tv() {
             // A simple deterministic spread of hashes, including the extremes.
             let mut hashes = vec![[0u8; 20], [0xffu8; 20]];
             let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -111,7 +111,7 @@ pub mod transparent {
             }
             for hash in hashes {
                 let address = encode_p2pkh(&hash);
-                assert!(address.starts_with("Vo"), "{address}");
+                assert!(address.starts_with("tv"), "{address}");
                 assert_eq!(address.len(), 35, "{address}");
                 assert_eq!(decode_p2pkh(&address), Ok(hash));
             }
@@ -138,7 +138,7 @@ pub mod transparent {
             );
             assert_eq!(decode_p2pkh(""), Err(AddressError::Encoding));
             // Valid Base58Check, but the payload is not 22 bytes.
-            let short = bs58::encode([0x10, 0x37, 1, 2, 3])
+            let short = bs58::encode([0x1d, 0x3b, 1, 2, 3])
                 .with_check()
                 .into_string();
             assert_eq!(decode_p2pkh(&short), Err(AddressError::Length));

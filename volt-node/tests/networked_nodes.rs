@@ -12,7 +12,7 @@ use std::{
 
 use tokio::time::sleep;
 use volt_core::{BatchableTx, Economics, VoltHash};
-use volt_crypto::Blake2bPowHasher;
+use volt_crypto::RandomXEngine;
 use volt_network::P2pConfig;
 use volt_node::{
     node::{Node, NodeConfig},
@@ -41,9 +41,10 @@ fn paced_clock() -> Arc<dyn Fn() -> u64 + Send + Sync> {
 fn config(dir: &Path, tag: u8, clock: &Arc<dyn Fn() -> u64 + Send + Sync>) -> NodeConfig {
     let mut config = NodeConfig::devnet(
         dir.to_path_buf(),
-        Arc::new(Blake2bPowHasher),
+        RandomXEngine::shared(),
         miner_addresses(tag),
-    );
+    )
+    .with_easy_pow();
     config.economics = Economics::fifty_fifty();
     config.p2p = P2pConfig {
         ping_interval: Duration::from_millis(300),

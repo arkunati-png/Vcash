@@ -6466,6 +6466,7 @@ name = "volt-consensus"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "sapling-crypto",
  "thiserror 2.0.18",
  "tracing",
  "volt-core",
@@ -6490,7 +6491,6 @@ dependencies = [
 name = "volt-crypto"
 version = "0.1.0"
 dependencies = [
- "blake2b_simd",
  "parking_lot",
  "randomx-rs",
  "thiserror 2.0.18",
@@ -6517,6 +6517,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "parking_lot",
+ "sapling-crypto",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

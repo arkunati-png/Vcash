@@ -11,15 +11,15 @@ pub const GHOSTDAG_K: usize = 32;
 /// A block can merge at most `k + 1` blue tips in one step, so more parents never help.
 pub const MAX_BLOCK_PARENTS: usize = GHOSTDAG_K + 1;
 
-/// The target interval between DAG blocks, in milliseconds (2 blocks per second).
-pub const TARGET_BLOCK_INTERVAL_MS: u64 = 500;
+/// The target interval between DAG blocks, in milliseconds (about 1.18 blocks per second).
+pub const TARGET_BLOCK_INTERVAL_MS: u64 = 850;
 
 /// The number of user transactions packed into one [`RollupBatch`](crate::RollupBatch).
 pub const BATCH_SIZE: usize = 10;
 
 /// The maximum number of rollup batches in one block.
 ///
-/// 100 batches * 10 transactions * 2 blocks/s = 2,000 transactions per second.
+/// 100 batches * 10 transactions * ~1.18 blocks/s = about 1,180 transactions per second.
 pub const MAX_BATCHES_PER_BLOCK: usize = 100;
 
 /// The number of accepted blocks in a POL settlement epoch.
@@ -29,8 +29,15 @@ pub const EPOCH_LENGTH: u64 = 200;
 ///
 /// A completed epoch is locked into the POL reserve only once its step is this deep, and state
 /// older than this is never reverted. Sibling tips of equal blue work swap places constantly in a
-/// DAG, so the newest steps must stay revertible. About 50 blocks is 25 seconds at 500 ms.
+/// DAG, so the newest steps must stay revertible. About 50 blocks is 42.5 seconds at 850 ms.
 pub const FINALITY_DEPTH: usize = 50;
+
+/// How many blue blocks one RandomX key lasts (2^18, about 62 hours at 850 ms).
+///
+/// Changing the key forces every miner to rebuild its 2 GB RandomX dataset, which takes a
+/// minute or more, so it must happen rarely. It is separate from [`EPOCH_LENGTH`], which is the
+/// reward-settlement period and is far too short for this.
+pub const POW_KEY_EPOCH_LENGTH: u64 = 262_144;
 
 /// The maximum number of unique payout addresses in one block's coinbase.
 pub const MAX_COINBASE_PAYOUTS: usize = 100;
@@ -74,6 +81,13 @@ pub const DIFFICULTY_WINDOW: usize = 120;
 ///
 /// Kept well below 2^251 so the difficulty adjustment can scale a target by 4x in 256-bit arithmetic.
 pub const POW_LIMIT_BITS: u32 = 0x1f7f_ffff;
+
+/// The PoW limit for tests, simulations and local development chains: a target of 2^253, so a
+/// block takes about 8 RandomX hashes instead of about 512.
+///
+/// The work is still RandomX. Only the target is easy. It is the easiest limit the difficulty
+/// adjustment's arithmetic allows (it scales a target by up to 4x inside 256 bits).
+pub const TEST_POW_LIMIT_BITS: u32 = 0x201f_ffff;
 
 /// The largest factor the difficulty adjustment may change the target by per block.
 pub const MAX_DIFFICULTY_STEP: u64 = 4;
