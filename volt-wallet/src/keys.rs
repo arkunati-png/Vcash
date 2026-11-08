@@ -3,7 +3,9 @@
 
 use bip0039::{Count, English, Mnemonic};
 use zcash_address::{ConversionError, ToAddress, TryFromAddress, ZcashAddress};
-use zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey};
+use zcash_keys::keys::{
+    ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey,
+};
 use zcash_protocol::consensus::NetworkType;
 use zcash_transparent::address::TransparentAddress;
 use zeroize::Zeroizing;
@@ -14,14 +16,28 @@ use crate::network::{VoltNetwork, NETWORK_TYPE};
 /// The addresses of account 0, all encoded with Voltcash prefixes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Addresses {
-    /// Orchard + Sapling + transparent receivers in one unified address.
-    pub unified: String,
-    /// Orchard + Sapling only: nothing about it can be linked to a transparent address.
+    /// Shielded: a Sapling receiver only, so nothing about it can be linked to a transparent
+    /// address. Starts with `z`.
     pub shielded: String,
-    /// Sapling only, for senders that do not support unified addresses.
-    pub sapling: String,
-    /// Transparent P2PKH.
+    /// Transparent P2PKH. Starts with `tv`.
     pub transparent: String,
+}
+
+/// What the app keeps once a wallet is unlocked: the addresses and the viewing key. The spending
+/// key is derived again from the phrase, only when a payment is signed.
+#[derive(Clone)]
+pub struct Account {
+    pub addrs: Addresses,
+    pub ufvk: UnifiedFullViewingKey,
+}
+
+/// Derives the account behind a recovery phrase.
+pub fn account(phrase: &str) -> Result<Account, String> {
+    let ufvk = viewing_key(phrase)?;
+    Ok(Account {
+        addrs: addresses(&ufvk)?,
+        ufvk,
+    })
 }
 
 /// Generates a fresh 24-word recovery phrase.
@@ -62,19 +78,19 @@ pub fn viewing_key(phrase: &str) -> Result<UnifiedFullViewingKey, String> {
 /// The default (diversifier index 0) addresses for a viewing key.
 pub fn addresses(ufvk: &UnifiedFullViewingKey) -> Result<Addresses, String> {
     let params = VoltNetwork;
+    // The transparent receiver comes from the all-receivers address; only its hash is used.
     let (unified, _) = ufvk
         .default_address(UnifiedAddressRequest::ALLOW_ALL)
-        .map_err(|e| format!("unified address: {e}"))?;
+        .map_err(|e| format!("address derivation: {e}"))?;
     let (shielded, _) = ufvk
-        .default_address(UnifiedAddressRequest::SHIELDED)
+        // Sapling only: the wallet scans and spends Sapling notes, so an Orchard receiver would
+        // be a place for funds to arrive that this wallet cannot see.
+        .default_address(UnifiedAddressRequest::unsafe_custom(
+            ReceiverRequirement::Omit,
+            ReceiverRequirement::Require,
+            ReceiverRequirement::Omit,
+        ))
         .map_err(|e| format!("shielded address: {e}"))?;
-
-    let sapling = ufvk
-        .sapling()
-        .ok_or("the key has no Sapling component")?
-        .default_address()
-        .1;
-    let sapling = ZcashAddress::from_sapling(NETWORK_TYPE, sapling.to_bytes()).encode();
 
     let transparent = match unified.transparent() {
         Some(TransparentAddress::PublicKeyHash(hash)) => {
@@ -84,9 +100,7 @@ pub fn addresses(ufvk: &UnifiedFullViewingKey) -> Result<Addresses, String> {
     };
 
     Ok(Addresses {
-        unified: unified.encode(&params),
         shielded: shielded.encode(&params),
-        sapling,
         transparent,
     })
 }
@@ -158,11 +172,8 @@ mod tests {
         let a = addresses(&viewing_key(PHRASE).unwrap()).unwrap();
         let b = addresses(&viewing_key(PHRASE).unwrap()).unwrap();
         assert_eq!(a, b);
-        assert!(a.unified.starts_with("volt1"), "{}", a.unified);
-        assert!(a.shielded.starts_with("volt1"), "{}", a.shielded);
-        assert!(a.sapling.starts_with("volts1"), "{}", a.sapling);
-        assert!(a.transparent.starts_with("Vo"), "{}", a.transparent);
-        assert_ne!(a.unified, a.shielded);
+        assert!(a.shielded.starts_with("z1"), "{}", a.shielded);
+        assert!(a.transparent.starts_with("tv"), "{}", a.transparent);
     }
 
     #[test]
@@ -185,8 +196,7 @@ mod tests {
     #[test]
     fn recipients_are_checked_against_the_voltcash_network() {
         let a = addresses(&viewing_key(PHRASE).unwrap()).unwrap();
-        assert_eq!(check_recipient(&a.unified), Ok(RecipientKind::Unified));
-        assert_eq!(check_recipient(&a.sapling), Ok(RecipientKind::Sapling));
+        assert_eq!(check_recipient(&a.shielded), Ok(RecipientKind::Unified));
         assert_eq!(
             check_recipient(&a.transparent),
             Ok(RecipientKind::Transparent)

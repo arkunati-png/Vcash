@@ -9,6 +9,16 @@ use zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parame
 /// One VOLT in zats, the same 10^8 scale as Zcash.
 pub const ZATS_PER_VOLT: u64 = 100_000_000;
 
+/// Where the blocks mined only to confirm a payment send their reward.
+///
+/// A local development node has nobody else to mine a payment, so after a send the app asks it
+/// to mine a couple of blocks. If those paid the sender, a payment would seem to leave the
+/// public balance untouched while the private one grew. The reward goes here instead: nobody
+/// holds a key for it, so those coins are simply not in circulation.
+pub fn dev_sink_address() -> String {
+    volt_params::transparent::encode_p2pkh(&[0xde; 20])
+}
+
 /// The network type Voltcash occupies inside librustzcash.
 pub const NETWORK_TYPE: NetworkType = NetworkType::Regtest;
 
